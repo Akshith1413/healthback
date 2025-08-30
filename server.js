@@ -35,6 +35,17 @@ const UserSchema = new mongoose.Schema({
   createdAt: { type: Date, default: Date.now }
 });
 
+// Add virtual for health profile
+UserSchema.virtual('healthProfile', {
+  ref: 'HealthProfile',
+  localField: '_id',
+  foreignField: 'userId',
+  justOne: true
+});
+
+// Enable virtuals in toJSON and toObject
+UserSchema.set('toJSON', { virtuals: true });
+UserSchema.set('toObject', { virtuals: true });
 const User = mongoose.model('User', UserSchema);
 // Health Profile Schema
 const HealthProfileSchema = new mongoose.Schema({
@@ -81,6 +92,95 @@ HealthProfileSchema.pre('save', function(next) {
 });
 
 const HealthProfile = mongoose.model('HealthProfile', HealthProfileSchema);
+const FamilySchema = new mongoose.Schema({
+  familyName: { type: String, required: true },
+  owner: { 
+    type: mongoose.Schema.Types.ObjectId, 
+    ref: 'User', 
+    required: true 
+  },
+  members: [{
+    user: { 
+      type: mongoose.Schema.Types.ObjectId, 
+      ref: 'User', 
+      required: true 
+    },
+    role: { 
+      type: String, 
+      enum: ['owner', 'member', 'child', 'elder'], 
+      default: 'member' 
+    },
+    joinedAt: { 
+      type: Date, 
+      default: Date.now 
+    },
+    status: { 
+      type: String, 
+      enum: ['pending', 'accepted', 'rejected'], 
+      default: 'pending' 
+    }
+  }],
+  createdAt: { 
+    type: Date, 
+    default: Date.now 
+  },
+  updatedAt: { 
+    type: Date, 
+    default: Date.now 
+  }
+});
+
+// Update timestamp before saving
+FamilySchema.pre('save', function(next) {
+  this.updatedAt = Date.now();
+  next();
+});
+
+const Family = mongoose.model('Family', FamilySchema);
+
+// Family Request Schema
+const FamilyRequestSchema = new mongoose.Schema({
+  fromUser: { 
+    type: mongoose.Schema.Types.ObjectId, 
+    ref: 'User', 
+    required: true 
+  },
+  toUser: { 
+    type: mongoose.Schema.Types.ObjectId, 
+    ref: 'User', 
+    required: true 
+  },
+  family: { 
+    type: mongoose.Schema.Types.ObjectId, 
+    ref: 'Family', 
+    required: true 
+  },
+  status: { 
+    type: String, 
+    enum: ['pending', 'accepted', 'rejected'], 
+    default: 'pending' 
+  },
+  message: { 
+    type: String, 
+    default: '' 
+  },
+  createdAt: { 
+    type: Date, 
+    default: Date.now 
+  },
+  updatedAt: { 
+    type: Date, 
+    default: Date.now 
+  }
+});
+
+// Update timestamp before saving
+FamilyRequestSchema.pre('save', function(next) {
+  this.updatedAt = Date.now();
+  next();
+});
+
+const FamilyRequest = mongoose.model('FamilyRequest', FamilyRequestSchema);
 // JWT Secret
 const JWT_SECRET = process.env.JWT_SECRET || 'your-secret-key';
 
@@ -369,7 +469,290 @@ app.put('/update-profile', authenticate, validateInputs('updateProfile'), async 
     res.status(500).json({ message: 'Server error' });
   }
 });
+// Get user's family
+app.get('/family', authenticate, async (req, res) => {
+  try {
+    const family = await Family.findOne({
+      $or: [
+        { owner: req.user._id },
+        { 'members.user': req.user._id, 'members.status': 'accepted' }
+      ]
+    }).populate('owner', 'username email')
+      .populate('members.user', 'username email');
+    
+    if (!family) {
+      return res.status(404).json({ message: 'No family found' });
+    }
+    
+    res.json(family);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ message: 'Server error' });
+  }
+});
 
+// Create new family
+app.post('/family', authenticate, [
+  body('familyName').not().isEmpty().trim().escape()
+], async (req, res) => {
+  const errors = validationResult(req);
+  if (!errors.isEmpty()) {
+    return res.status(400).json({ errors: errors.array() });
+  }
+
+  try {
+    const { familyName } = req.body;
+
+    // Check if user already has a family
+    const existingFamily = await Family.findOne({
+      $or: [
+        { owner: req.user._id },
+        { 'members.user': req.user._id, 'members.status': 'accepted' }
+      ]
+    });
+
+    if (existingFamily) {
+      return res.status(400).json({ message: 'You already belong to a family' });
+    }
+
+    // Create new family
+    const family = new Family({
+      familyName,
+      owner: req.user._id,
+      members: [{
+        user: req.user._id,
+        role: 'owner',
+        status: 'accepted'
+      }]
+    });
+
+    await family.save();
+    
+    // Populate the data before sending response
+    await family.populate('owner', 'username email');
+    await family.populate('members.user', 'username email');
+
+    res.status(201).json({ message: 'Family created successfully', family });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ message: 'Server error' });
+  }
+});
+
+// Send family invitation
+app.post('/family/invite', authenticate, [
+  body('email').isEmail().normalizeEmail(),
+  body('familyId').not().isEmpty()
+], async (req, res) => {
+  const errors = validationResult(req);
+  if (!errors.isEmpty()) {
+    return res.status(400).json({ errors: errors.array() });
+  }
+
+  try {
+    const { email, familyId, message } = req.body;
+
+    // Check if family exists and user is the owner
+    const family = await Family.findOne({ 
+      _id: familyId, 
+      owner: req.user._id 
+    });
+
+    if (!family) {
+      return res.status(404).json({ message: 'Family not found or you are not the owner' });
+    }
+
+    // Find the user to invite
+    const userToInvite = await User.findOne({ email });
+    if (!userToInvite) {
+      return res.status(404).json({ message: 'User with this email not found' });
+    }
+
+    // Check if user is already in the family
+    const alreadyMember = family.members.some(
+      member => member.user.toString() === userToInvite._id.toString() && member.status === 'accepted'
+    );
+
+    if (alreadyMember) {
+      return res.status(400).json({ message: 'User is already a family member' });
+    }
+
+    // Check if there's already a pending request
+    const existingRequest = await FamilyRequest.findOne({
+      fromUser: req.user._id,
+      toUser: userToInvite._id,
+      family: familyId,
+      status: 'pending'
+    });
+
+    if (existingRequest) {
+      return res.status(400).json({ message: 'Invitation already sent to this user' });
+    }
+
+    // Create invitation
+    const familyRequest = new FamilyRequest({
+      fromUser: req.user._id,
+      toUser: userToInvite._id,
+      family: familyId,
+      message: message || `${req.user.username} invited you to join their family`
+    });
+
+    await familyRequest.save();
+    
+    // Populate data for response
+    await familyRequest.populate('fromUser', 'username email');
+    await familyRequest.populate('toUser', 'username email');
+    await familyRequest.populate('family');
+
+    res.status(201).json({ message: 'Invitation sent successfully', request: familyRequest });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ message: 'Server error' });
+  }
+});
+
+// Get pending family requests
+app.get('/family/requests', authenticate, async (req, res) => {
+  try {
+    const requests = await FamilyRequest.find({
+      toUser: req.user._id,
+      status: 'pending'
+    }).populate('fromUser', 'username email')
+      .populate('family', 'familyName');
+
+    res.json(requests);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ message: 'Server error' });
+  }
+});
+
+// Respond to family request
+app.post('/family/requests/:requestId/respond', authenticate, [
+  body('response').isIn(['accepted', 'rejected'])
+], async (req, res) => {
+  const errors = validationResult(req);
+  if (!errors.isEmpty()) {
+    return res.status(400).json({ errors: errors.array() });
+  }
+
+  try {
+    const { response } = req.body;
+    const { requestId } = req.params;
+
+    const familyRequest = await FamilyRequest.findOne({
+      _id: requestId,
+      toUser: req.user._id,
+      status: 'pending'
+    }).populate('family');
+
+    if (!familyRequest) {
+      return res.status(404).json({ message: 'Request not found' });
+    }
+
+    if (response === 'accepted') {
+      // Add user to family
+      const family = await Family.findById(familyRequest.family._id);
+      family.members.push({
+        user: req.user._id,
+        role: 'member',
+        status: 'accepted'
+      });
+      await family.save();
+    }
+
+    // Update request status
+    familyRequest.status = response;
+    await familyRequest.save();
+
+    res.json({ message: `Request ${response} successfully` });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ message: 'Server error' });
+  }
+});
+
+// Get family health dashboard
+app.get('/family/health-dashboard', authenticate, async (req, res) => {
+  try {
+    // Get user's family
+    const family = await Family.findOne({
+      $or: [
+        { owner: req.user._id },
+        { 'members.user': req.user._id, 'members.status': 'accepted' }
+      ]
+    }).populate({
+      path: 'members.user',
+      select: 'username email',
+      populate: {
+        path: 'healthProfile',
+        model: 'HealthProfile',
+        select: 'age gender height weight bloodGroup conditions allergies'
+      }
+    });
+
+    if (!family) {
+      return res.status(404).json({ message: 'No family found' });
+    }
+
+    // Filter only accepted members with health profiles
+    const familyMembers = family.members
+      .filter(member => member.status === 'accepted')
+      .map(member => ({
+        _id: member.user._id,
+        username: member.user.username,
+        email: member.user.email,
+        role: member.role,
+        healthProfile: member.user.healthProfile || null
+      }));
+
+    res.json({
+      familyName: family.familyName,
+      members: familyMembers
+    });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ message: 'Server error' });
+  }
+});
+
+// Remove family member
+app.delete('/family/members/:memberId', authenticate, async (req, res) => {
+  try {
+    const { memberId } = req.params;
+
+    const family = await Family.findOne({
+      owner: req.user._id
+    });
+
+    if (!family) {
+      return res.status(404).json({ message: 'You are not the owner of any family' });
+    }
+
+    // Check if member exists
+    const memberIndex = family.members.findIndex(
+      member => member.user.toString() === memberId && member.status === 'accepted'
+    );
+
+    if (memberIndex === -1) {
+      return res.status(404).json({ message: 'Member not found' });
+    }
+
+    // Cannot remove yourself if you're the owner
+    if (memberId === req.user._id.toString() && family.owner.toString() === req.user._id.toString()) {
+      return res.status(400).json({ message: 'As the owner, you cannot remove yourself. Transfer ownership first.' });
+    }
+
+    // Remove member
+    family.members.splice(memberIndex, 1);
+    await family.save();
+
+    res.json({ message: 'Member removed successfully' });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ message: 'Server error' });
+  }
+});
 // Delete Account Route
 app.delete('/delete-account', authenticate, async (req, res) => {
   try {
