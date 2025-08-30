@@ -36,7 +36,51 @@ const UserSchema = new mongoose.Schema({
 });
 
 const User = mongoose.model('User', UserSchema);
+// Health Profile Schema
+const HealthProfileSchema = new mongoose.Schema({
+  userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true, unique: true },
+  email: { type: String, required: true, unique: true },
+  username: { type: String, required: true },
+  age: { type: Number, required: true },
+  gender: { type: String, required: true, enum: ['Male', 'Female', 'Other'] },
+  height: { type: Number, required: true }, // in cm
+  weight: { type: Number, required: true }, // in kg
+  targetWeight: { type: Number },
+  bloodGroup: { type: String, enum: ['A+', 'A-', 'B+', 'B-', 'AB+', 'AB-', 'O+', 'O-'] },
+  conditions: [{ type: String }],
+  dietPreference: { type: String, enum: ['Vegetarian', 'Vegan', 'Non-vegetarian', 'Pescatarian', 'Keto', 'Paleo', 'Other'] },
+  healthGoal: { type: String, enum: ['Weight Loss', 'Weight Gain', 'Maintain Weight', 'Muscle Building', 'Improve Fitness', 'Manage Condition'] },
+  dailyCalorieTarget: { type: Number },
+  bmi: { type: Number },
+  smokingHabit: { type: String, enum: ['Non-smoker', 'Occasional', 'Regular', 'Former smoker'] },
+  alcoholConsumption: { type: String, enum: ['Non-drinker', 'Occasional', 'Regular', 'Former drinker'] },
+  emergencyContact: {
+    name: { type: String },
+    phone: { type: String }
+  },
+  allergies: [{ type: String }],
+  medications: [{ 
+    name: { type: String },
+    dosage: { type: String },
+    frequency: { type: String }
+  }],
+  activityLevel: { type: String, enum: ['Sedentary', 'Lightly Active', 'Moderately Active', 'Very Active', 'Extremely Active'] },
+  sleepHours: { type: Number },
+  createdAt: { type: Date, default: Date.now },
+  updatedAt: { type: Date, default: Date.now }
+});
 
+// Calculate BMI before saving
+HealthProfileSchema.pre('save', function(next) {
+  if (this.height && this.weight) {
+    const heightInMeters = this.height / 100;
+    this.bmi = parseFloat((this.weight / (heightInMeters * heightInMeters)).toFixed(1));
+  }
+  this.updatedAt = Date.now();
+  next();
+});
+
+const HealthProfile = mongoose.model('HealthProfile', HealthProfileSchema);
 // JWT Secret
 const JWT_SECRET = process.env.JWT_SECRET || 'your-secret-key';
 
@@ -169,7 +213,84 @@ app.post('/signin', validateInputs('signin'), async (req, res) => {
     res.status(500).json({ message: 'Server error' });
   }
 });
+// Get Health Profile
+app.get('/health-profile', authenticate, async (req, res) => {
+  try {
+    const healthProfile = await HealthProfile.findOne({ userId: req.user._id });
+    
+    if (!healthProfile) {
+      return res.status(404).json({ message: 'Health profile not found' });
+    }
+    
+    res.json(healthProfile);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ message: 'Server error' });
+  }
+});
 
+// Create/Update Health Profile
+app.post('/health-profile', authenticate, [
+  body('age').isInt({ min: 1, max: 120 }),
+  body('gender').isIn(['Male', 'Female', 'Other']),
+  body('height').isFloat({ min: 50, max: 250 }),
+  body('weight').isFloat({ min: 2, max: 300 }),
+  body('bloodGroup').optional().isIn(['A+', 'A-', 'B+', 'B-', 'AB+', 'AB-', 'O+', 'O-']),
+  body('dietPreference').optional().isIn(['Vegetarian', 'Vegan', 'Non-vegetarian', 'Pescatarian', 'Keto', 'Paleo', 'Other']),
+  body('healthGoal').optional().isIn(['Weight Loss', 'Weight Gain', 'Maintain Weight', 'Muscle Building', 'Improve Fitness', 'Manage Condition']),
+  body('dailyCalorieTarget').optional().isInt({ min: 500, max: 10000 }),
+  body('smokingHabit').optional().isIn(['Non-smoker', 'Occasional', 'Regular', 'Former smoker']),
+  body('alcoholConsumption').optional().isIn(['Non-drinker', 'Occasional', 'Regular', 'Former drinker']),
+  body('activityLevel').optional().isIn(['Sedentary', 'Lightly Active', 'Moderately Active', 'Very Active', 'Extremely Active']),
+  body('sleepHours').optional().isFloat({ min: 0, max: 24 })
+], async (req, res) => {
+  const errors = validationResult(req);
+  if (!errors.isEmpty()) {
+    return res.status(400).json({ errors: errors.array() });
+  }
+
+  try {
+    const {
+      age, gender, height, weight, targetWeight, bloodGroup,
+      conditions, dietPreference, healthGoal, dailyCalorieTarget,
+      smokingHabit, alcoholConsumption, emergencyContact,
+      allergies, medications, activityLevel, sleepHours
+    } = req.body;
+
+    let healthProfile = await HealthProfile.findOne({ userId: req.user._id });
+
+    if (healthProfile) {
+      // Update existing profile
+      healthProfile = await HealthProfile.findOneAndUpdate(
+        { userId: req.user._id },
+        {
+          age, gender, height, weight, targetWeight, bloodGroup,
+          conditions, dietPreference, healthGoal, dailyCalorieTarget,
+          smokingHabit, alcoholConsumption, emergencyContact,
+          allergies, medications, activityLevel, sleepHours
+        },
+        { new: true, runValidators: true }
+      );
+    } else {
+      // Create new profile
+      healthProfile = new HealthProfile({
+        userId: req.user._id,
+        email: req.user.email,
+        username: req.user.username,
+        age, gender, height, weight, targetWeight, bloodGroup,
+        conditions, dietPreference, healthGoal, dailyCalorieTarget,
+        smokingHabit, alcoholConsumption, emergencyContact,
+        allergies, medications, activityLevel, sleepHours
+      });
+      await healthProfile.save();
+    }
+
+    res.json({ message: 'Health profile saved successfully', healthProfile });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ message: 'Server error' });
+  }
+});
 // Update Password Route
 app.put('/update-password', authenticate, validateInputs('updatePassword'), async (req, res) => {
   const errors = validationResult(req);
