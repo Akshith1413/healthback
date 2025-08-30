@@ -92,6 +92,7 @@ HealthProfileSchema.pre('save', function(next) {
 });
 
 const HealthProfile = mongoose.model('HealthProfile', HealthProfileSchema);
+// Family Schema
 const FamilySchema = new mongoose.Schema({
   familyName: { type: String, required: true },
   owner: { 
@@ -107,7 +108,7 @@ const FamilySchema = new mongoose.Schema({
     },
     role: { 
       type: String, 
-      enum: ['owner', 'member', 'child', 'elder'], 
+      enum: ['owner', 'admin', 'member', 'child', 'elder'], 
       default: 'member' 
     },
     joinedAt: { 
@@ -120,6 +121,12 @@ const FamilySchema = new mongoose.Schema({
       default: 'pending' 
     }
   }],
+  description: { type: String },
+  familyType: {
+    type: String,
+    enum: ['immediate', 'extended', 'friends', 'health_group', 'other'],
+    default: 'immediate'
+  },
   createdAt: { 
     type: Date, 
     default: Date.now 
@@ -493,7 +500,9 @@ app.get('/family', authenticate, async (req, res) => {
 
 // Create new family
 app.post('/family', authenticate, [
-  body('familyName').not().isEmpty().trim().escape()
+  body('familyName').not().isEmpty().trim().escape(),
+  body('familyType').optional().isIn(['immediate', 'extended', 'friends', 'health_group', 'other']),
+  body('description').optional().trim().escape()
 ], async (req, res) => {
   const errors = validationResult(req);
   if (!errors.isEmpty()) {
@@ -501,23 +510,13 @@ app.post('/family', authenticate, [
   }
 
   try {
-    const { familyName } = req.body;
-
-    // Check if user already has a family
-    const existingFamily = await Family.findOne({
-      $or: [
-        { owner: req.user._id },
-        { 'members.user': req.user._id, 'members.status': 'accepted' }
-      ]
-    });
-
-    if (existingFamily) {
-      return res.status(400).json({ message: 'You already belong to a family' });
-    }
+    const { familyName, familyType, description } = req.body;
 
     // Create new family
     const family = new Family({
       familyName,
+      familyType: familyType || 'immediate',
+      description,
       owner: req.user._id,
       members: [{
         user: req.user._id,
@@ -533,6 +532,154 @@ app.post('/family', authenticate, [
     await family.populate('members.user', 'username email');
 
     res.status(201).json({ message: 'Family created successfully', family });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ message: 'Server error' });
+  }
+});
+// Delete family (only for owner)
+app.delete('/family/:familyId', authenticate, async (req, res) => {
+  try {
+    const { familyId } = req.params;
+
+    const family = await Family.findOne({
+      _id: familyId,
+      owner: req.user._id
+    });
+
+    if (!family) {
+      return res.status(404).json({ message: 'Family not found or you are not the owner' });
+    }
+
+    await Family.findByIdAndDelete(familyId);
+    
+    // Also delete all related requests
+    await FamilyRequest.deleteMany({ family: familyId });
+    
+    res.json({ message: 'Family deleted successfully' });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ message: 'Server error' });
+  }
+});
+// Get family health dashboard
+app.get('/family/:familyId/health-dashboard', authenticate, async (req, res) => {
+  try {
+    const { familyId } = req.params;
+
+    // Get family and verify user is a member
+    const family = await Family.findOne({
+      _id: familyId,
+      'members.user': req.user._id,
+      'members.status': 'accepted'
+    }).populate({
+      path: 'members.user',
+      select: 'username email',
+      populate: {
+        path: 'healthProfile',
+        model: 'HealthProfile',
+        select: 'age gender height weight bloodGroup conditions allergies medications activityLevel'
+      }
+    });
+
+    if (!family) {
+      return res.status(404).json({ message: 'Family not found or access denied' });
+    }
+
+    // Filter only accepted members with health profiles
+    const familyMembers = family.members
+      .filter(member => member.status === 'accepted')
+      .map(member => ({
+        _id: member.user._id,
+        username: member.user.username,
+        email: member.user.email,
+        role: member.role,
+        healthProfile: member.user.healthProfile || null
+      }));
+
+    res.json({
+      familyName: family.familyName,
+      members: familyMembers
+    });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ message: 'Server error' });
+  }
+});
+// Send family invitation
+app.post('/family/:familyId/invite', authenticate, [
+  body('email').isEmail().normalizeEmail(),
+  body('message').optional().trim().escape(),
+  body('role').optional().isIn(['admin', 'member', 'child', 'elder'])
+], async (req, res) => {
+  const errors = validationResult(req);
+  if (!errors.isEmpty()) {
+    return res.status(400).json({ errors: errors.array() });
+  }
+
+  try {
+    const { email, message, role } = req.body;
+    const { familyId } = req.params;
+
+    // Check if family exists and user is a member with appropriate permissions
+    const family = await Family.findOne({ 
+      _id: familyId,
+      'members.user': req.user._id,
+      'members.status': 'accepted',
+      $or: [
+        { 'members.role': 'owner' },
+        { 'members.role': 'admin' }
+      ]
+    });
+
+    if (!family) {
+      return res.status(403).json({ message: 'You do not have permission to invite members to this family' });
+    }
+
+    // Find the user to invite
+    const userToInvite = await User.findOne({ email });
+    if (!userToInvite) {
+      return res.status(404).json({ message: 'User with this email not found' });
+    }
+
+    // Check if user is already in the family
+    const alreadyMember = family.members.some(
+      member => member.user.toString() === userToInvite._id.toString()
+    );
+
+    if (alreadyMember) {
+      return res.status(400).json({ message: 'User is already in this family' });
+    }
+
+    // Check if there's already a pending request
+    const existingRequest = await FamilyRequest.findOne({
+      fromUser: req.user._id,
+      toUser: userToInvite._id,
+      family: familyId,
+      status: 'pending'
+    });
+
+    if (existingRequest) {
+      return res.status(400).json({ message: 'Invitation already sent to this user' });
+    }
+
+    // Create invitation
+    const familyRequest = new FamilyRequest({
+      fromUser: req.user._id,
+      toUser: userToInvite._id,
+      family: familyId,
+      role: role || 'member',
+      message: message || `${req.user.username} invited you to join their family`
+    });
+
+    await familyRequest.save();
+    
+    // Populate data for response
+    await familyRequest.populate('fromUser', 'username email');
+    await familyRequest.populate('toUser', 'username email');
+    await familyRequest.populate('family');
+
+    res.status(201).json({ message: 'Invitation sent successfully', request: familyRequest });
   } catch (err) {
     console.error(err);
     res.status(500).json({ message: 'Server error' });
@@ -617,8 +764,10 @@ app.get('/family/requests', authenticate, async (req, res) => {
     const requests = await FamilyRequest.find({
       toUser: req.user._id,
       status: 'pending'
-    }).populate('fromUser', 'username email')
-      .populate('family', 'familyName');
+    })
+    .populate('fromUser', 'username email')
+    .populate('family', 'familyName familyType')
+    .sort({ createdAt: -1 });
 
     res.json(requests);
   } catch (err) {
@@ -626,6 +775,7 @@ app.get('/family/requests', authenticate, async (req, res) => {
     res.status(500).json({ message: 'Server error' });
   }
 });
+
 
 // Respond to family request
 app.post('/family/requests/:requestId/respond', authenticate, [
@@ -655,7 +805,7 @@ app.post('/family/requests/:requestId/respond', authenticate, [
       const family = await Family.findById(familyRequest.family._id);
       family.members.push({
         user: req.user._id,
-        role: 'member',
+        role: familyRequest.role,
         status: 'accepted'
       });
       await family.save();
@@ -671,7 +821,74 @@ app.post('/family/requests/:requestId/respond', authenticate, [
     res.status(500).json({ message: 'Server error' });
   }
 });
+app.post('/family/:familyId/leave', authenticate, async (req, res) => {
+  try {
+    const { familyId } = req.params;
 
+    const family = await Family.findById(familyId);
+    if (!family) {
+      return res.status(404).json({ message: 'Family not found' });
+    }
+
+    // Check if user is the owner
+    if (family.owner.toString() === req.user._id.toString()) {
+      return res.status(400).json({ message: 'Owners cannot leave their family. Transfer ownership or delete the family instead.' });
+    }
+
+    // Remove user from family members
+    family.members = family.members.filter(
+      member => member.user.toString() !== req.user._id.toString()
+    );
+
+    await family.save();
+    res.json({ message: 'Left family successfully' });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ message: 'Server error' });
+  }
+});
+
+// Remove family member (only for owners/admins)
+app.delete('/family/:familyId/members/:memberId', authenticate, async (req, res) => {
+  try {
+    const { familyId, memberId } = req.params;
+
+    const family = await Family.findOne({
+      _id: familyId,
+      'members.user': req.user._id,
+      'members.status': 'accepted',
+      $or: [
+        { 'members.role': 'owner' },
+        { 'members.role': 'admin' }
+      ]
+    });
+
+    if (!family) {
+      return res.status(403).json({ message: 'You do not have permission to remove members' });
+    }
+
+    // Check if trying to remove owner
+    if (family.owner.toString() === memberId) {
+      return res.status(400).json({ message: 'Cannot remove the family owner' });
+    }
+
+    // Check if trying to remove yourself
+    if (memberId === req.user._id.toString()) {
+      return res.status(400).json({ message: 'Use the leave family option instead' });
+    }
+
+    // Remove member
+    family.members = family.members.filter(
+      member => member.user.toString() !== memberId
+    );
+
+    await family.save();
+    res.json({ message: 'Member removed successfully' });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ message: 'Server error' });
+  }
+});
 // Get family health dashboard
 app.get('/family/health-dashboard', authenticate, async (req, res) => {
   try {
@@ -770,6 +987,45 @@ app.get('/profile', authenticate, async (req, res) => {
   try {
     const user = await User.findById(req.user._id).select('-password');
     res.json(user);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ message: 'Server error' });
+  }
+});
+// Get all user's families (both owned and joined)
+app.get('/families', authenticate, async (req, res) => {
+  try {
+    const families = await Family.find({
+      'members.user': req.user._id,
+      'members.status': 'accepted'
+    })
+    .populate('owner', 'username email')
+    .populate('members.user', 'username email')
+    .sort({ createdAt: -1 });
+    
+    res.json(families);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ message: 'Server error' });
+  }
+});
+
+// Get family by ID
+app.get('/family/:id', authenticate, async (req, res) => {
+  try {
+    const family = await Family.findOne({
+      _id: req.params.id,
+      'members.user': req.user._id,
+      'members.status': 'accepted'
+    })
+    .populate('owner', 'username email')
+    .populate('members.user', 'username email');
+    
+    if (!family) {
+      return res.status(404).json({ message: 'Family not found or access denied' });
+    }
+    
+    res.json(family);
   } catch (err) {
     console.error(err);
     res.status(500).json({ message: 'Server error' });
