@@ -47,9 +47,11 @@ UserSchema.virtual('healthProfile', {
 UserSchema.set('toJSON', { virtuals: true });
 UserSchema.set('toObject', { virtuals: true });
 const User = mongoose.model('User', UserSchema);
+
 // Health Profile Schema
 const HealthProfileSchema = new mongoose.Schema({
   userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true, unique: true },
+  user: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
   email: { type: String, required: true, unique: true },
   username: { type: String, required: true },
   age: { type: Number, required: true },
@@ -92,6 +94,126 @@ HealthProfileSchema.pre('save', function(next) {
 });
 
 const HealthProfile = mongoose.model('HealthProfile', HealthProfileSchema);
+
+// Group Schema
+const GroupSchema = new mongoose.Schema({
+  groupName: {
+    type: String,
+    required: true,
+    trim: true,
+    maxlength: 100
+  },
+  description: {
+    type: String,
+    required: true,
+    maxlength: 500
+  },
+  category: {
+    type: String,
+    required: true,
+    enum: [
+      'chronic_diseases',
+      'mental_health',
+      'fitness_goals',
+      'diet_nutrition',
+      'age_groups',
+      'gender_specific',
+      'recovery_support',
+      'preventive_care',
+      'family_health',
+      'other'
+    ]
+  },
+  targetConditions: [{
+    type: String,
+    trim: true
+  }],
+  severityLevel: {
+    type: String,
+    enum: ['low', 'medium', 'high', 'critical'],
+    default: 'medium'
+  },
+  privacy: {
+    type: String,
+    enum: ['public', 'private'],
+    default: 'public'
+  },
+  requireApproval: {
+    type: Boolean,
+    default: false
+  },
+  creator: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'User',
+    required: true
+  },
+  moderators: [{
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'User'
+  }],
+  members: [{
+    user: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'User',
+      required: true
+    },
+    joinedAt: {
+      type: Date,
+      default: Date.now
+    },
+    role: {
+      type: String,
+      enum: ['admin', 'moderator', 'member', 'pending'],
+      default: 'member'
+    }
+  }],
+  membersCount: {
+    type: Number,
+    default: 0
+  },
+  maxMembers: {
+    type: Number,
+    min: 1,
+    max: 10000
+  },
+  minAge: {
+    type: Number,
+    min: 0,
+    max: 120
+  },
+  maxAge: {
+    type: Number,
+    min: 0,
+    max: 120
+  },
+  allowedGenders: [{
+    type: String,
+    enum: ['Male', 'Female', 'Other']
+  }],
+  tags: [{
+    type: String,
+    trim: true
+  }],
+  isActive: {
+    type: Boolean,
+    default: true
+  },
+  deletedAt: {
+    type: Date
+  }
+}, {
+  timestamps: true
+});
+
+// Indexes for better query performance
+GroupSchema.index({ category: 1, privacy: 1, isActive: 1 });
+GroupSchema.index({ targetConditions: 1, isActive: 1 });
+GroupSchema.index({ creator: 1 });
+GroupSchema.index({ 'members.user': 1 });
+GroupSchema.index({ groupName: 'text', description: 'text' });
+
+const Group = mongoose.model('Group', GroupSchema);
+
 // Family Schema
 const FamilySchema = new mongoose.Schema({
   familyName: { type: String, required: true },
@@ -188,6 +310,7 @@ FamilyRequestSchema.pre('save', function(next) {
 });
 
 const FamilyRequest = mongoose.model('FamilyRequest', FamilyRequestSchema);
+
 // JWT Secret
 const JWT_SECRET = process.env.JWT_SECRET || 'your-secret-key';
 
@@ -320,6 +443,7 @@ app.post('/signin', validateInputs('signin'), async (req, res) => {
     res.status(500).json({ message: 'Server error' });
   }
 });
+
 // Get Health Profile
 app.get('/health-profile', authenticate, async (req, res) => {
   try {
@@ -382,6 +506,7 @@ app.post('/health-profile', authenticate, [
       // Create new profile
       healthProfile = new HealthProfile({
         userId: req.user._id,
+        user: req.user._id,
         email: req.user.email,
         username: req.user.username,
         age, gender, height, weight, targetWeight, bloodGroup,
@@ -398,6 +523,7 @@ app.post('/health-profile', authenticate, [
     res.status(500).json({ message: 'Server error' });
   }
 });
+
 // Update Password Route
 app.put('/update-password', authenticate, validateInputs('updatePassword'), async (req, res) => {
   const errors = validationResult(req);
@@ -476,6 +602,431 @@ app.put('/update-profile', authenticate, validateInputs('updateProfile'), async 
     res.status(500).json({ message: 'Server error' });
   }
 });
+
+// ===================
+// GROUP ROUTES
+// ===================
+
+// GET /groups - Get all groups (public + user's private groups)
+app.get('/groups', authenticate, async (req, res) => {
+  try {
+    const publicGroups = await Group.find({
+      privacy: 'public',
+      isActive: true
+    }).populate('creator', 'username email')
+      .populate('members.user', 'username email')
+      .populate('moderators', 'username email')
+      .sort({ createdAt: -1 });
+
+    const userPrivateGroups = await Group.find({
+      $or: [
+        { creator: req.user.id },
+        { 'members.user': req.user.id }
+      ],
+      privacy: 'private',
+      isActive: true
+    }).populate('creator', 'username email')
+      .populate('members.user', 'username email')
+      .populate('moderators', 'username email')
+      .sort({ createdAt: -1 });
+
+    const allGroups = [...publicGroups, ...userPrivateGroups];
+
+    res.json(allGroups);
+  } catch (err) {
+    console.error('Get groups error:', err);
+    res.status(500).json({ message: 'Server error' });
+  }
+});
+
+// GET /groups/my - Get user's groups (created + joined)
+app.get('/groups/my', authenticate, async (req, res) => {
+  try {
+    const groups = await Group.find({
+      $or: [
+        { creator: req.user.id },
+        { 'members.user': req.user.id }
+      ],
+      isActive: true
+    }).populate('creator', 'username email')
+      .populate('members.user', 'username email')
+      .populate('moderators', 'username email')
+      .sort({ createdAt: -1 });
+
+    res.json(groups);
+  } catch (err) {
+    console.error('Get my groups error:', err);
+    res.status(500).json({ message: 'Server error' });
+  }
+});
+
+// GET /groups/discover - Discover groups by condition/category
+app.get('/groups/discover', authenticate, async (req, res) => {
+  try {
+    const { condition, category, search } = req.query;
+    let query = { privacy: 'public', isActive: true };
+
+    if (condition) {
+      query.targetConditions = { $in: [condition] };
+    }
+    
+    if (category) {
+      query.category = category;
+    }
+
+    if (search) {
+      query.$or = [
+        { groupName: { $regex: search, $options: 'i' } },
+        { description: { $regex: search, $options: 'i' } },
+        { targetConditions: { $in: [new RegExp(search, 'i')] } }
+      ];
+    }
+
+    const groups = await Group.find(query)
+      .populate('creator', 'username email')
+      .populate('members.user', 'username email')
+      .limit(50)
+      .sort({ membersCount: -1, createdAt: -1 });
+
+    res.json(groups);
+  } catch (err) {
+    console.error('Discover groups error:', err);
+    res.status(500).json({ message: 'Server error' });
+  }
+});
+
+// GET /groups/suggested - Get suggested groups based on user's health profile
+app.get('/groups/suggested', authenticate, async (req, res) => {
+  try {
+    const healthProfile = await HealthProfile.findOne({ user: req.user.id });
+    
+    if (!healthProfile) {
+      return res.json([]);
+    }
+
+    const userConditions = healthProfile.conditions || [];
+    const userAge = healthProfile.age;
+    const userGender = healthProfile.gender;
+
+    let query = {
+      privacy: 'public',
+      isActive: true,
+      'members.user': { $ne: req.user.id },
+      creator: { $ne: req.user.id }
+    };
+
+    // Find groups matching user's conditions
+    if (userConditions.length > 0) {
+      query.targetConditions = { $in: userConditions };
+    }
+
+    const conditionGroups = await Group.find(query)
+      .populate('creator', 'username email')
+      .populate('members.user', 'username email')
+      .limit(10)
+      .sort({ membersCount: -1 });
+
+    // Find age-appropriate groups
+    let ageGroups = [];
+    if (userAge) {
+      const ageQuery = {
+        ...query,
+        $and: [
+          { $or: [{ minAge: { $lte: userAge } }, { minAge: { $exists: false } }] },
+          { $or: [{ maxAge: { $gte: userAge } }, { maxAge: { $exists: false } }] }
+        ]
+      };
+      delete ageQuery.targetConditions;
+
+      ageGroups = await Group.find(ageQuery)
+        .populate('creator', 'username email')
+        .populate('members.user', 'username email')
+        .limit(5)
+        .sort({ membersCount: -1 });
+    }
+
+    // Combine and deduplicate
+    const allSuggested = [...conditionGroups, ...ageGroups];
+    const uniqueGroups = allSuggested.filter((group, index, self) =>
+      index === self.findIndex(g => g._id.toString() === group._id.toString())
+    );
+
+    res.json(uniqueGroups.slice(0, 15));
+  } catch (err) {
+    console.error('Get suggested groups error:', err);
+    res.status(500).json({ message: 'Server error' });
+  }
+});
+
+// POST /groups - Create a new group
+app.post('/groups', authenticate, async (req, res) => {
+  try {
+    const {
+      groupName,
+      description,
+      category,
+      targetConditions,
+      severityLevel,
+      privacy,
+      requireApproval,
+      maxMembers,
+      minAge,
+      maxAge,
+      allowedGenders
+    } = req.body;
+
+    // Validation
+    if (!groupName || !description || !category) {
+      return res.status(400).json({
+        message: 'Group name, description, and category are required'
+      });
+    }
+
+    // Check if group name already exists
+    const existingGroup = await Group.findOne({ 
+      groupName: { $regex: new RegExp(`^${groupName}$`, 'i') },
+      isActive: true
+    });
+
+    if (existingGroup) {
+      return res.status(400).json({
+        message: 'A group with this name already exists'
+      });
+    }
+
+    const newGroup = new Group({
+      groupName,
+      description,
+      category,
+      targetConditions: targetConditions || [],
+      severityLevel,
+      privacy: privacy || 'public',
+      requireApproval: requireApproval || false,
+      maxMembers: maxMembers || null,
+      minAge: minAge || null,
+      maxAge: maxAge || null,
+      allowedGenders: allowedGenders || [],
+      creator: req.user.id,
+      moderators: [req.user.id],
+      members: [{
+        user: req.user.id,
+        joinedAt: new Date(),
+        role: 'admin'
+      }],
+      membersCount: 1
+    });
+
+    await newGroup.save();
+
+    const populatedGroup = await Group.findById(newGroup._id)
+      .populate('creator', 'username email')
+      .populate('members.user', 'username email')
+      .populate('moderators', 'username email');
+
+    res.status(201).json(populatedGroup);
+  } catch (err) {
+    console.error('Create group error:', err);
+    res.status(500).json({ message: 'Server error' });
+  }
+});
+
+// GET /groups/:id - Get group details
+app.get('/groups/:id', authenticate, async (req, res) => {
+  try {
+    const group = await Group.findById(req.params.id)
+      .populate('creator', 'username email')
+      .populate('members.user', 'username email')
+      .populate('moderators', 'username email');
+
+    if (!group || !group.isActive) {
+      return res.status(404).json({ message: 'Group not found' });
+    }
+
+    // Check if user has access to private group
+    if (group.privacy === 'private') {
+      const isMember = group.members.some(m => m.user._id.toString() === req.user.id);
+      const isCreator = group.creator._id.toString() === req.user.id;
+      
+      if (!isMember && !isCreator) {
+        return res.status(403).json({ message: 'Access denied' });
+      }
+    }
+
+    res.json(group);
+  } catch (err) {
+    console.error('Get group details error:', err);
+    res.status(500).json({ message: 'Server error' });
+  }
+});
+
+// POST /groups/:id/join - Join a group
+app.post('/groups/:id/join', authenticate, async (req, res) => {
+  try {
+    const group = await Group.findById(req.params.id);
+    
+    if (!group || !group.isActive) {
+      return res.status(404).json({ message: 'Group not found' });
+    }
+
+    // Check if already a member
+    const isAlreadyMember = group.members.some(m => m.user.toString() === req.user.id);
+    if (isAlreadyMember) {
+      return res.status(400).json({ message: 'You are already a member of this group' });
+    }
+
+    // Check member limit
+    if (group.maxMembers && group.membersCount >= group.maxMembers) {
+      return res.status(400).json({ message: 'Group has reached maximum capacity' });
+    }
+
+    // Check age and gender restrictions
+    const healthProfile = await HealthProfile.findOne({ user: req.user.id });
+    if (healthProfile) {
+      if (group.minAge && healthProfile.age < group.minAge) {
+        return res.status(400).json({ message: 'You do not meet the minimum age requirement' });
+      }
+      if (group.maxAge && healthProfile.age > group.maxAge) {
+        return res.status(400).json({ message: 'You exceed the maximum age limit' });
+      }
+      if (group.allowedGenders.length > 0 && !group.allowedGenders.includes(healthProfile.gender)) {
+        return res.status(400).json({ message: 'This group has gender restrictions' });
+      }
+    }
+
+    const memberRole = group.requireApproval ? 'pending' : 'member';
+    
+    group.members.push({
+      user: req.user.id,
+      joinedAt: new Date(),
+      role: memberRole
+    });
+
+    if (!group.requireApproval) {
+      group.membersCount += 1;
+    }
+
+    await group.save();
+
+    const updatedGroup = await Group.findById(group._id)
+      .populate('creator', 'username email')
+      .populate('members.user', 'username email')
+      .populate('moderators', 'username email');
+
+    res.json({
+      message: group.requireApproval ? 'Join request sent for approval' : 'Successfully joined the group',
+      group: updatedGroup
+    });
+  } catch (err) {
+    console.error('Join group error:', err);
+    res.status(500).json({ message: 'Server error' });
+  }
+});
+
+// POST /groups/:id/leave - Leave a group
+app.post('/groups/:id/leave', authenticate, async (req, res) => {
+  try {
+    const group = await Group.findById(req.params.id);
+    
+    if (!group) {
+      return res.status(404).json({ message: 'Group not found' });
+    }
+
+    // Check if user is the creator
+    if (group.creator.toString() === req.user.id) {
+      return res.status(400).json({ message: 'Group creator cannot leave. Please transfer ownership or delete the group.' });
+    }
+
+    // Remove user from members
+    const memberIndex = group.members.findIndex(m => m.user.toString() === req.user.id);
+    if (memberIndex === -1) {
+      return res.status(400).json({ message: 'You are not a member of this group' });
+    }
+
+    group.members.splice(memberIndex, 1);
+    group.membersCount = Math.max(0, group.membersCount - 1);
+
+    // Remove from moderators if applicable
+    group.moderators = group.moderators.filter(m => m.toString() !== req.user.id);
+
+    await group.save();
+
+    res.json({ message: 'Successfully left the group' });
+  } catch (err) {
+    console.error('Leave group error:', err);
+    res.status(500).json({ message: 'Server error' });
+  }
+});
+
+// POST /groups/:id/approve-member - Approve pending member (moderator/admin only)
+app.post('/groups/:id/approve-member', authenticate, async (req, res) => {
+  try {
+    const { userId } = req.body;
+    const group = await Group.findById(req.params.id);
+    
+    if (!group) {
+      return res.status(404).json({ message: 'Group not found' });
+    }
+
+    // Check if user is moderator or creator
+    const isCreator = group.creator.toString() === req.user.id;
+    const isModerator = group.moderators.includes(req.user.id);
+    
+    if (!isCreator && !isModerator) {
+      return res.status(403).json({ message: 'Only moderators can approve members' });
+    }
+
+    // Find and update member
+    const member = group.members.find(m => m.user.toString() === userId && m.role === 'pending');
+    if (!member) {
+      return res.status(404).json({ message: 'Pending member not found' });
+    }
+
+    member.role = 'member';
+    group.membersCount += 1;
+
+    await group.save();
+
+    const updatedGroup = await Group.findById(group._id)
+      .populate('creator', 'username email')
+      .populate('members.user', 'username email')
+      .populate('moderators', 'username email');
+
+    res.json({ message: 'Member approved successfully', group: updatedGroup });
+  } catch (err) {
+    console.error('Approve member error:', err);
+    res.status(500).json({ message: 'Server error' });
+  }
+});
+
+// DELETE /groups/:id - Delete group (creator only)
+app.delete('/groups/:id', authenticate, async (req, res) => {
+  try {
+    const group = await Group.findById(req.params.id);
+    
+    if (!group) {
+      return res.status(404).json({ message: 'Group not found' });
+    }
+
+    // Check if user is the creator
+    if (group.creator.toString() !== req.user.id) {
+      return res.status(403).json({ message: 'Only the group creator can delete the group' });
+    }
+
+    group.isActive = false;
+    group.deletedAt = new Date();
+    await group.save();
+
+    res.json({ message: 'Group deleted successfully' });
+  } catch (err) {
+    console.error('Delete group error:', err);
+    res.status(500).json({ message: 'Server error' });
+  }
+});
+
+// ===================
+// FAMILY ROUTES
+// ===================
+
 // Get user's family
 app.get('/family', authenticate, async (req, res) => {
   try {
@@ -537,6 +1088,7 @@ app.post('/family', authenticate, [
     res.status(500).json({ message: 'Server error' });
   }
 });
+
 // Delete family (only for owner)
 app.delete('/family/:familyId', authenticate, async (req, res) => {
   try {
@@ -562,6 +1114,7 @@ app.delete('/family/:familyId', authenticate, async (req, res) => {
     res.status(500).json({ message: 'Server error' });
   }
 });
+
 // Get family health dashboard
 app.get('/family/:familyId/health-dashboard', authenticate, async (req, res) => {
   try {
@@ -606,6 +1159,7 @@ app.get('/family/:familyId/health-dashboard', authenticate, async (req, res) => 
     res.status(500).json({ message: 'Server error' });
   }
 });
+
 // Send family invitation
 app.post('/family/:familyId/invite', authenticate, [
   body('email').isEmail().normalizeEmail(),
@@ -686,7 +1240,7 @@ app.post('/family/:familyId/invite', authenticate, [
   }
 });
 
-// Send family invitation
+// Send family invitation (alternative endpoint)
 app.post('/family/invite', authenticate, [
   body('email').isEmail().normalizeEmail(),
   body('familyId').not().isEmpty()
@@ -776,7 +1330,6 @@ app.get('/family/requests', authenticate, async (req, res) => {
   }
 });
 
-
 // Respond to family request
 app.post('/family/requests/:requestId/respond', authenticate, [
   body('response').isIn(['accepted', 'rejected'])
@@ -821,6 +1374,8 @@ app.post('/family/requests/:requestId/respond', authenticate, [
     res.status(500).json({ message: 'Server error' });
   }
 });
+
+// Leave family
 app.post('/family/:familyId/leave', authenticate, async (req, res) => {
   try {
     const { familyId } = req.params;
@@ -889,7 +1444,8 @@ app.delete('/family/:familyId/members/:memberId', authenticate, async (req, res)
     res.status(500).json({ message: 'Server error' });
   }
 });
-// Get family health dashboard
+
+// Get family health dashboard (alternative endpoint)
 app.get('/family/health-dashboard', authenticate, async (req, res) => {
   try {
     // Get user's family
@@ -933,7 +1489,7 @@ app.get('/family/health-dashboard', authenticate, async (req, res) => {
   }
 });
 
-// Remove family member
+// Remove family member (alternative endpoint)
 app.delete('/family/members/:memberId', authenticate, async (req, res) => {
   try {
     const { memberId } = req.params;
@@ -970,28 +1526,7 @@ app.delete('/family/members/:memberId', authenticate, async (req, res) => {
     res.status(500).json({ message: 'Server error' });
   }
 });
-// Delete Account Route
-app.delete('/delete-account', authenticate, async (req, res) => {
-  try {
-    const user = req.user;
-    await User.findByIdAndDelete(user._id);
-    res.json({ message: 'Account deleted successfully' });
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ message: 'Server error' });
-  }
-});
 
-// Protected Route Example
-app.get('/profile', authenticate, async (req, res) => {
-  try {
-    const user = await User.findById(req.user._id).select('-password');
-    res.json(user);
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ message: 'Server error' });
-  }
-});
 // Get all user's families (both owned and joined)
 app.get('/families', authenticate, async (req, res) => {
   try {
@@ -1026,6 +1561,29 @@ app.get('/family/:id', authenticate, async (req, res) => {
     }
     
     res.json(family);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ message: 'Server error' });
+  }
+});
+
+// Delete Account Route
+app.delete('/delete-account', authenticate, async (req, res) => {
+  try {
+    const user = req.user;
+    await User.findByIdAndDelete(user._id);
+    res.json({ message: 'Account deleted successfully' });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ message: 'Server error' });
+  }
+});
+
+// Protected Route Example
+app.get('/profile', authenticate, async (req, res) => {
+  try {
+    const user = await User.findById(req.user._id).select('-password');
+    res.json(user);
   } catch (err) {
     console.error(err);
     res.status(500).json({ message: 'Server error' });
