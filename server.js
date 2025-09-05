@@ -310,6 +310,162 @@ FamilyRequestSchema.pre('save', function(next) {
 });
 
 const FamilyRequest = mongoose.model('FamilyRequest', FamilyRequestSchema);
+const SupplementSchema = new mongoose.Schema({
+  name: { type: String, required: true },
+  brand: { type: String },
+  type: { 
+    type: String, 
+    enum: ['Vitamin', 'Mineral', 'Herbal', 'Amino Acid', 'Enzyme', 'Probiotic', 'Other'],
+    required: true 
+  },
+  dosageUnit: { type: String, required: true }, // mg, mcg, IU, etc.
+  servingSize: { type: Number, required: true },
+  ingredients: [{ 
+    name: { type: String },
+    amount: { type: Number },
+    unit: { type: String }
+  }],
+  description: { type: String },
+  potentialBenefits: [{ type: String }],
+  potentialSideEffects: [{ type: String }],
+  interactions: [{
+    substance: { type: String },
+    interactionType: { 
+      type: String, 
+      enum: ['Mild', 'Moderate', 'Severe'] 
+    },
+    description: { type: String }
+  }],
+  createdAt: { type: Date, default: Date.now }
+});
+
+const Supplement = mongoose.model('Supplement', SupplementSchema);
+
+// User Supplement Schema
+const UserSupplementSchema = new mongoose.Schema({
+  userId: { 
+    type: mongoose.Schema.Types.ObjectId, 
+    ref: 'User', 
+    required: true 
+  },
+  supplementId: { 
+    type: mongoose.Schema.Types.ObjectId, 
+    ref: 'Supplement' 
+  },
+  customSupplement: {
+    name: { type: String },
+    brand: { type: String },
+    type: { type: String },
+    dosageUnit: { type: String },
+    servingSize: { type: Number }
+  },
+  dosage: { type: Number, required: true },
+  frequency: { 
+    type: String, 
+    enum: ['Once Daily', 'Twice Daily', 'Three Times Daily', 'As Needed'],
+    required: true 
+  },
+  specificTimes: [{ type: String }], // e.g., ["08:00", "12:00", "20:00"]
+  withFood: { type: Boolean, default: false },
+  startDate: { type: Date, default: Date.now },
+  endDate: { type: Date },
+  reason: { type: String },
+  healthProfessional: {
+    name: { type: String },
+    type: { type: String } // Doctor, Nutritionist, etc.
+  },
+  cost: {
+    price: { type: Number },
+    currency: { type: String, default: 'USD' },
+    quantity: { type: Number }, // number of units in package
+    refillReminder: { type: Boolean, default: false },
+    refillThreshold: { type: Number } // days before running out
+  },
+  status: { 
+    type: String, 
+    enum: ['Active', 'Paused', 'Completed', 'Discontinued'],
+    default: 'Active'
+  },
+  notes: { type: String },
+  createdAt: { type: Date, default: Date.now },
+  updatedAt: { type: Date, default: Date.now }
+});
+
+UserSupplementSchema.pre('save', function(next) {
+  this.updatedAt = Date.now();
+  next();
+});
+UserSupplementSchema.index({ userId: 1, status: 1 });
+const UserSupplement = mongoose.model('UserSupplement', UserSupplementSchema);
+
+// Supplement Intake Schema
+const SupplementIntakeSchema = new mongoose.Schema({
+  userId: { 
+    type: mongoose.Schema.Types.ObjectId, 
+    ref: 'User', 
+    required: true 
+  },
+  userSupplementId: { 
+    type: mongoose.Schema.Types.ObjectId, 
+    ref: 'UserSupplement', 
+    required: true 
+  },
+  takenAt: { type: Date, required: true },
+  dosageTaken: { type: Number, required: true },
+  wasTaken: { type: Boolean, default: true },
+  skippedReason: { type: String },
+  notes: { type: String },
+  createdAt: { type: Date, default: Date.now }
+});
+SupplementIntakeSchema.index({ userId: 1, takenAt: -1 });
+
+const SupplementIntake = mongoose.model('SupplementIntake', SupplementIntakeSchema);
+
+// Health Metric Schema
+const HealthMetricSchema = new mongoose.Schema({
+  userId: { 
+    type: mongoose.Schema.Types.ObjectId, 
+    ref: 'User', 
+    required: true 
+  },
+  type: { 
+    type: String, 
+    enum: ['Energy', 'Mood', 'Sleep', 'Pain', 'Stress', 'Custom'],
+    required: true 
+  },
+  customType: { type: String },
+  value: { type: Number, required: true }, // 1-10 scale or actual measurement
+  unit: { type: String },
+  notes: { type: String },
+  recordedAt: { type: Date, required: true },
+  createdAt: { type: Date, default: Date.now }
+});
+HealthMetricSchema.index({ userId: 1, recordedAt: -1 });
+const HealthMetric = mongoose.model('HealthMetric', HealthMetricSchema);
+
+// Interaction Warning Schema
+const InteractionWarningSchema = new mongoose.Schema({
+  userId: { 
+    type: mongoose.Schema.Types.ObjectId, 
+    ref: 'User', 
+    required: true 
+  },
+  supplementsInvolved: [{ 
+    type: mongoose.Schema.Types.ObjectId, 
+    ref: 'UserSupplement' 
+  }],
+  severity: { 
+    type: String, 
+    enum: ['Mild', 'Moderate', 'Severe'],
+    required: true 
+  },
+  description: { type: String, required: true },
+  recommendation: { type: String },
+  acknowledged: { type: Boolean, default: false },
+  createdAt: { type: Date, default: Date.now }
+});
+
+const InteractionWarning = mongoose.model('InteractionWarning', InteractionWarningSchema);
 
 // JWT Secret
 const JWT_SECRET = process.env.JWT_SECRET || 'your-secret-key';
@@ -1589,7 +1745,583 @@ app.get('/profile', authenticate, async (req, res) => {
     res.status(500).json({ message: 'Server error' });
   }
 });
+app.get('/supplements', authenticate, async (req, res) => {
+  try {
+    const { search, type, page = 1, limit = 20 } = req.query;
+    let query = {};
+    
+    if (search) {
+      query.name = { $regex: search, $options: 'i' };
+    }
+    
+    if (type) {
+      query.type = type;
+    }
+    
+    const supplements = await Supplement.find(query)
+      .limit(limit * 1)
+      .skip((page - 1) * limit)
+      .sort({ name: 1 });
+    
+    const total = await Supplement.countDocuments(query);
+    
+    res.json({
+      supplements,
+      totalPages: Math.ceil(total / limit),
+      currentPage: page,
+      total
+    });
+  } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
+});
 
+// Get user's supplements
+app.get('/user-supplements', authenticate, async (req, res) => {
+  try {
+    const userSupplements = await UserSupplement.find({ userId: req.user.id })
+      .populate('supplementId')
+      .sort({ createdAt: -1 });
+    
+    res.json(userSupplements);
+  } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
+});
+
+// Add a supplement to user's regimen
+app.post('/user-supplements', authenticate, async (req, res) => {
+  try {
+    const {
+      supplementId,
+      customSupplement,
+      dosage,
+      frequency,
+      specificTimes,
+      withFood,
+      startDate,
+      endDate,
+      reason,
+      healthProfessional,
+      cost,
+      notes
+    } = req.body;
+    
+    // Check if supplement exists if not custom
+    if (supplementId) {
+      const supplement = await Supplement.findById(supplementId);
+      if (!supplement) {
+        return res.status(404).json({ message: 'Supplement not found' });
+      }
+    }
+    
+    const userSupplement = new UserSupplement({
+      userId: req.user.id,
+      supplementId,
+      customSupplement,
+      dosage,
+      frequency,
+      specificTimes,
+      withFood,
+      startDate,
+      endDate,
+      reason,
+      healthProfessional,
+      cost,
+      notes
+    });
+    
+    await userSupplement.save();
+    
+    // Check for interactions
+    await checkInteractions(req.user.id, userSupplement._id);
+    
+    res.status(201).json(userSupplement);
+  } catch (error) {
+    res.status(400).json({ message: error.message });
+  }
+});
+
+// Update user supplement
+app.put('/user-supplements/:id', authenticate, async (req, res) => {
+  try {
+    const userSupplement = await UserSupplement.findOne({
+      _id: req.params.id,
+      userId: req.user.id
+    });
+    
+    if (!userSupplement) {
+      return res.status(404).json({ message: 'Supplement not found' });
+    }
+    
+    Object.keys(req.body).forEach(key => {
+      userSupplement[key] = req.body[key];
+    });
+    
+    await userSupplement.save();
+    
+    // Check for interactions after update
+    await checkInteractions(req.user.id, userSupplement._id);
+    
+    res.json(userSupplement);
+  } catch (error) {
+    res.status(400).json({ message: error.message });
+  }
+});
+
+// Delete user supplement
+app.delete('/user-supplements/:id', authenticate, async (req, res) => {
+  try {
+    const userSupplement = await UserSupplement.findOneAndDelete({
+      _id: req.params.id,
+      userId: req.user.id
+    });
+    
+    if (!userSupplement) {
+      return res.status(404).json({ message: 'Supplement not found' });
+    }
+    
+    // Delete all intake records for this supplement
+    await SupplementIntake.deleteMany({ userSupplementId: req.params.id });
+    
+    res.json({ message: 'Supplement removed successfully' });
+  } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
+});
+
+// Record supplement intake
+app.post('/intake', authenticate, async (req, res) => {
+  try {
+    const { userSupplementId, takenAt, dosageTaken, wasTaken, skippedReason, notes } = req.body;
+    
+    const userSupplement = await UserSupplement.findOne({
+      _id: userSupplementId,
+      userId: req.user.id
+    });
+    
+    if (!userSupplement) {
+      return res.status(404).json({ message: 'Supplement not found' });
+    }
+    
+    const intake = new SupplementIntake({
+      userId: req.user.id,
+      userSupplementId,
+      takenAt: takenAt || new Date(),
+      dosageTaken: dosageTaken || userSupplement.dosage,
+      wasTaken,
+      skippedReason,
+      notes
+    });
+    
+    await intake.save();
+    res.status(201).json(intake);
+  } catch (error) {
+    res.status(400).json({ message: error.message });
+  }
+});
+
+// Get intake history
+app.get('/intake-history', authenticate, async (req, res) => {
+  try {
+    const { startDate, endDate, userSupplementId } = req.query;
+    let query = { userId: req.user.id };
+    
+    if (startDate && endDate) {
+      query.takenAt = {
+        $gte: new Date(startDate),
+        $lte: new Date(endDate)
+      };
+    }
+    
+    if (userSupplementId) {
+      query.userSupplementId = userSupplementId;
+    }
+    
+    const intakeHistory = await SupplementIntake.find(query)
+      .populate('userSupplementId')
+      .sort({ takenAt: -1 });
+    
+    res.json(intakeHistory);
+  } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
+});
+
+// Get adherence reports
+app.get('/adherence-reports', authenticate, async (req, res) => {
+  try {
+    const { startDate, endDate } = req.query;
+    const start = new Date(startDate || new Date().setDate(new Date().getDate() - 30));
+    const end = new Date(endDate || new Date());
+    
+    // Get all user supplements
+    const userSupplements = await UserSupplement.find({ userId: req.user.id });
+    
+    const reports = await Promise.all(userSupplements.map(async (supp) => {
+      // Calculate expected intakes based on frequency
+      const expectedIntakes = calculateExpectedIntakes(supp, start, end);
+      
+      // Get actual intakes
+      const actualIntakes = await SupplementIntake.find({
+        userId: req.user.id,
+        userSupplementId: supp._id,
+        takenAt: { $gte: start, $lte: end },
+        wasTaken: true
+      });
+      
+      const adherenceRate = expectedIntakes.length > 0 
+        ? (actualIntakes.length / expectedIntakes.length) * 100 
+        : 100;
+      
+      return {
+        supplement: supp.customSupplement?.name || (await Supplement.findById(supp.supplementId))?.name,
+        expectedIntakes: expectedIntakes.length,
+        actualIntakes: actualIntakes.length,
+        adherenceRate: Math.round(adherenceRate),
+        missedIntakes: expectedIntakes.length - actualIntakes.length
+      };
+    }));
+    
+    res.json(reports);
+  } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
+});
+
+// Get cost tracking reports
+app.get('/cost-reports', authenticate, async (req, res) => {
+  try {
+    const userSupplements = await UserSupplement.find({ userId: req.user.id })
+      .populate('supplementId');
+    
+    const reports = userSupplements.map(supp => {
+      const supplementName = supp.customSupplement?.name || supp.supplementId?.name;
+      const cost = supp.cost || {};
+      const dailyCost = cost.price && cost.quantity && supp.dosage && supp.frequency
+        ? calculateDailyCost(cost.price, cost.quantity, supp.dosage, supp.frequency)
+        : 0;
+      
+      return {
+        name: supplementName,
+        cost: cost.price || 0,
+        currency: cost.currency || 'USD',
+        quantity: cost.quantity || 0,
+        dailyCost: dailyCost,
+        monthlyCost: dailyCost * 30,
+        yearlyCost: dailyCost * 365
+      };
+    });
+    
+    const totalDailyCost = reports.reduce((sum, report) => sum + report.dailyCost, 0);
+    const totalMonthlyCost = reports.reduce((sum, report) => sum + report.monthlyCost, 0);
+    const totalYearlyCost = reports.reduce((sum, report) => sum + report.yearlyCost, 0);
+    
+    res.json({
+      supplements: reports,
+      totals: {
+        daily: totalDailyCost,
+        monthly: totalMonthlyCost,
+        yearly: totalYearlyCost
+      }
+    });
+  } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
+});
+
+// Get effectiveness tracking
+app.get('/effectiveness', authenticate, async (req, res) => {
+  try {
+    const { supplementId, startDate, endDate } = req.query;
+    const start = new Date(startDate || new Date().setMonth(new Date().getMonth() - 1));
+    const end = new Date(endDate || new Date());
+    
+    // Get health metrics for the period
+    const healthMetrics = await HealthMetric.find({
+      userId: req.user.id,
+      recordedAt: { $gte: start, $lte: end }
+    }).sort({ recordedAt: 1 });
+    
+    // Get supplement start date if specific supplement is requested
+    let supplementStartDate = null;
+    if (supplementId) {
+      const userSupplement = await UserSupplement.findOne({
+        _id: supplementId,
+        userId: req.user.id
+      });
+      supplementStartDate = userSupplement?.startDate;
+    }
+    
+    res.json({
+      healthMetrics,
+      supplementStartDate
+    });
+  } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
+});
+
+// Get interaction warnings
+app.get('/interactions', authenticate, async (req, res) => {
+  try {
+    const warnings = await InteractionWarning.find({
+      userId: req.user.id,
+      acknowledged: false
+    }).populate('supplementsInvolved');
+    
+    res.json(warnings);
+  } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
+});
+
+// Acknowledge interaction warning
+app.put('/interactions/:id/acknowledge', authenticate, async (req, res) => {
+  try {
+    const warning = await InteractionWarning.findOneAndUpdate(
+      { _id: req.params.id, userId: req.user.id },
+      { acknowledged: true },
+      { new: true }
+    );
+    
+    if (!warning) {
+      return res.status(404).json({ message: 'Warning not found' });
+    }
+    
+    res.json(warning);
+  } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
+});
+// Add health metric routes
+app.post('/health-metrics', authenticate, async (req, res) => {
+  try {
+    const { type, customType, value, unit, notes, recordedAt } = req.body;
+    
+    const healthMetric = new HealthMetric({
+      userId: req.user._id,
+      type,
+      customType,
+      value,
+      unit,
+      notes,
+      recordedAt: recordedAt || new Date()
+    });
+    
+    await healthMetric.save();
+    res.status(201).json(healthMetric);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ message: 'Server error' });
+  }
+});
+
+app.get('/health-metrics', authenticate, async (req, res) => {
+  try {
+    const { startDate, endDate, type } = req.query;
+    let query = { userId: req.user._id };
+    
+    if (startDate && endDate) {
+      query.recordedAt = {
+        $gte: new Date(startDate),
+        $lte: new Date(endDate)
+      };
+    }
+    
+    if (type) {
+      query.type = type;
+    }
+    
+    const metrics = await HealthMetric.find(query).sort({ recordedAt: -1 });
+    res.json(metrics);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ message: 'Server error' });
+  }
+});
+const validateSupplement = [
+  body('name').not().isEmpty().trim(),
+  body('type').isIn(['Vitamin', 'Mineral', 'Herbal', 'Amino Acid', 'Enzyme', 'Probiotic', 'Other']),
+  body('dosageUnit').not().isEmpty(),
+  body('servingSize').isNumeric()
+];
+// Add custom supplement to database
+app.post('/custom-supplement', authenticate, validateSupplement, async (req, res) => {
+  try {
+    const {
+      name,
+      brand,
+      type,
+      dosageUnit,
+      servingSize,
+      ingredients,
+      description,
+      potentialBenefits,
+      potentialSideEffects,
+      interactions
+    } = req.body;
+    
+    const supplement = new Supplement({
+      name,
+      brand,
+      type,
+      dosageUnit,
+      servingSize,
+      ingredients,
+      description,
+      potentialBenefits,
+      potentialSideEffects,
+      interactions
+    });
+    
+    await supplement.save();
+    res.status(201).json(supplement);
+  } catch (error) {
+    res.status(400).json({ message: error.message });
+  }
+});
+
+// Helper function to check for interactions
+async function checkInteractions(userId, newSupplementId) {
+  try {
+    // Get all active supplements for user
+    const userSupplements = await UserSupplement.find({
+      userId,
+      status: 'Active'
+    }).populate('supplementId');
+    
+    const newSupplement = await UserSupplement.findById(newSupplementId)
+      .populate('supplementId');
+    
+    if (!newSupplement) return;
+    
+    const newSupplementName = newSupplement.customSupplement?.name || 
+      newSupplement.supplementId?.name;
+    
+    // Check each existing supplement against the new one
+    for (const existingSupp of userSupplements) {
+      if (existingSupp._id.toString() === newSupplementId.toString()) continue;
+      
+      const existingSuppName = existingSupp.customSupplement?.name || 
+        existingSupp.supplementId?.name;
+      
+      // In a real implementation, you would query a drug interaction database API
+      // For this example, we'll simulate finding interactions
+      const interaction = await findInteractionInDatabase(
+        newSupplementName, 
+        existingSuppName
+      );
+      
+      if (interaction) {
+        // Create interaction warning
+        const warning = new InteractionWarning({
+          userId,
+          supplementsInvolved: [newSupplementId, existingSupp._id],
+          severity: interaction.severity,
+          description: `Interaction between ${newSupplementName} and ${existingSuppName}: ${interaction.description}`,
+          recommendation: interaction.recommendation
+        });
+        
+        await warning.save();
+      }
+    }
+  } catch (error) {
+    console.error('Error checking interactions:', error);
+  }
+}
+
+// Helper function to simulate interaction database lookup
+async function findInteractionInDatabase(supplement1, supplement2) {
+  // This would typically query an external API or comprehensive database
+  // For demonstration, we'll return a simulated interaction for certain combinations
+  
+  const interactionMap = {
+    'Vitamin K-Warfarin': {
+      severity: 'Severe',
+      description: 'Vitamin K can decrease the effectiveness of Warfarin',
+      recommendation: 'Monitor INR closely and consult your doctor'
+    },
+    'Calcium-Iron': {
+      severity: 'Moderate',
+      description: 'Calcium can interfere with iron absorption',
+      recommendation: 'Take these supplements at least 2 hours apart'
+    },
+    'St. John\'s Wort-Birth Control': {
+      severity: 'Severe',
+      description: 'St. John\'s Wort may decrease the effectiveness of birth control pills',
+      recommendation: 'Use alternative contraception methods and consult your doctor'
+    }
+  };
+  
+  const key1 = `${supplement1}-${supplement2}`;
+  const key2 = `${supplement2}-${supplement1}`;
+  
+  return interactionMap[key1] || interactionMap[key2] || null;
+}
+
+// Helper function to calculate expected intakes
+function calculateExpectedIntakes(supplement, startDate, endDate) {
+  const expectedIntakes = [];
+  const currentDate = new Date(startDate);
+  
+  while (currentDate <= endDate) {
+    const times = supplement.specificTimes || getDefaultTimes(supplement.frequency);
+    
+    for (const time of times) {
+      const [hours, minutes] = time.split(':').map(Number);
+      const intakeTime = new Date(currentDate);
+      intakeTime.setHours(hours, minutes, 0, 0);
+      
+      if (intakeTime >= startDate && intakeTime <= endDate) {
+        expectedIntakes.push(intakeTime);
+      }
+    }
+    
+    currentDate.setDate(currentDate.getDate() + 1);
+  }
+  
+  return expectedIntakes;
+}
+
+// Helper function to get default times based on frequency
+function getDefaultTimes(frequency) {
+  switch (frequency) {
+    case 'Once Daily':
+      return ['08:00'];
+    case 'Twice Daily':
+      return ['08:00', '20:00'];
+    case 'Three Times Daily':
+      return ['08:00', '12:00', '20:00'];
+    default:
+      return ['08:00'];
+  }
+}
+
+// Helper function to calculate daily cost
+function calculateDailyCost(price, quantity, dosage, frequency) {
+  const dosesPerDay = getDosesPerDay(frequency);
+  const servingsPerPackage = quantity / dosage;
+  const daysPerPackage = servingsPerPackage / dosesPerDay;
+  
+  return price / daysPerPackage;
+}
+
+// Helper function to get doses per day based on frequency
+function getDosesPerDay(frequency) {
+  switch (frequency) {
+    case 'Once Daily':
+      return 1;
+    case 'Twice Daily':
+      return 2;
+    case 'Three Times Daily':
+      return 3;
+    case 'As Needed':
+      return 0.5; // Estimate
+    default:
+      return 1;
+  }
+}
 // Error handling middleware
 app.use((err, req, res, next) => {
   console.error(err.stack);
