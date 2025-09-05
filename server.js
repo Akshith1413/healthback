@@ -2322,6 +2322,7 @@ function getDosesPerDay(frequency) {
       return 1;
   }
 }
+require('./index')(app, mongoose, authenticate);
 // Error handling middleware
 app.use((err, req, res, next) => {
   console.error(err.stack);
