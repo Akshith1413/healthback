@@ -2323,6 +2323,7 @@ function getDosesPerDay(frequency) {
   }
 }
 require('./index')(app, mongoose, authenticate);
+require('./bharath')(app, mongoose, authenticate);
 // Error handling middleware
 app.use((err, req, res, next) => {
   console.error(err.stack);
