@@ -45,35 +45,50 @@ const RecipeSchema = new mongoose.Schema({
   updatedAt: { type: Date, default: Date.now }
 });
 
-RecipeSchema.pre('save', function(next) {
+RecipeSchema.pre('save', async function(next) {
   this.updatedAt = Date.now();
   
   // Calculate nutrition from ingredients
-  if (this.ingredients.length > 0) {
-    let totalCalories = 0;
-    let totalProtein = 0;
-    let totalCarbs = 0;
-    let totalFat = 0;
-    let totalFiber = 0;
-    
-    this.ingredients.forEach(ingredient => {
-      // This would be populated when querying
-      if (ingredient.foodItem && typeof ingredient.foodItem === 'object') {
-        totalCalories += (ingredient.foodItem.calories * ingredient.quantity);
-        totalProtein += (ingredient.foodItem.protein * ingredient.quantity);
-        totalCarbs += (ingredient.foodItem.carbs * ingredient.quantity);
-        totalFat += (ingredient.foodItem.fat * ingredient.quantity);
-        totalFiber += (ingredient.foodItem.fiber * ingredient.quantity);
+  if (this.ingredients.length > 0 && this.isModified('ingredients')) {
+    try {
+      // Populate ingredients if they're ObjectIds
+      let populatedIngredients = this.ingredients;
+      if (typeof this.ingredients[0].foodItem === 'object' && 
+          this.ingredients[0].foodItem._id) {
+        // Already populated
+      } else {
+        // Need to populate
+        const recipe = await this.populate('ingredients.foodItem').execPopulate();
+        populatedIngredients = recipe.ingredients;
       }
-    });
-    
-    this.nutrition = {
-      calories: Math.round(totalCalories / this.servings),
-      protein: Math.round(totalProtein / this.servings),
-      carbs: Math.round(totalCarbs / this.servings),
-      fat: Math.round(totalFat / this.servings),
-      fiber: Math.round(totalFiber / this.servings)
-    };
+      
+      let totalCalories = 0;
+      let totalProtein = 0;
+      let totalCarbs = 0;
+      let totalFat = 0;
+      let totalFiber = 0;
+      
+      populatedIngredients.forEach(ingredient => {
+        if (ingredient.foodItem) {
+          totalCalories += (ingredient.foodItem.calories * ingredient.quantity);
+          totalProtein += (ingredient.foodItem.protein * ingredient.quantity);
+          totalCarbs += (ingredient.foodItem.carbs * ingredient.quantity);
+          totalFat += (ingredient.foodItem.fat * ingredient.quantity);
+          totalFiber += (ingredient.foodItem.fiber * ingredient.quantity);
+        }
+      });
+      
+      this.nutrition = {
+        calories: Math.round(totalCalories / this.servings),
+        protein: Math.round(totalProtein / this.servings),
+        carbs: Math.round(totalCarbs / this.servings),
+        fat: Math.round(totalFat / this.servings),
+        fiber: Math.round(totalFiber / this.servings)
+      };
+    } catch (error) {
+      console.error('Error calculating recipe nutrition:', error);
+      // Continue without nutrition data
+    }
   }
   
   next();
@@ -230,7 +245,17 @@ app.get('/api/food-items', authenticate, async (req, res) => {
     res.status(500).json({ message: 'Server error' });
   }
 });
-
+app.get('/api/food-items/:id', authenticate, async (req, res) => {
+  try {
+    const foodItem = await FoodItem.findById(req.params.id);
+    if (!foodItem) {
+      return res.status(404).json({ message: 'Food item not found' });
+    }
+    res.json(foodItem);
+  } catch (error) {
+    res.status(500).json({ message: 'Server error' });
+  }
+});
 app.post('/api/food-items', authenticate, async (req, res) => {
   try {
     const foodItem = new FoodItem({
@@ -293,7 +318,25 @@ app.get('/api/meals', authenticate, async (req, res) => {
     res.status(500).json({ message: 'Server error' });
   }
 });
-
+// Delete a meal
+app.delete('/api/meals/:id', authenticate, async (req, res) => {
+  try {
+    const meal = await Meal.findById(req.params.id);
+    if (!meal) {
+      return res.status(404).json({ message: 'Meal not found' });
+    }
+    
+    // Check if the meal belongs to the user
+    if (meal.userId.toString() !== req.user._id.toString()) {
+      return res.status(403).json({ message: 'Not authorized' });
+    }
+    
+    await Meal.findByIdAndDelete(req.params.id);
+    res.json({ message: 'Meal deleted successfully' });
+  } catch (error) {
+    res.status(500).json({ message: 'Server error' });
+  }
+});
 app.post('/api/meals', authenticate, async (req, res) => {
   try {
     const meal = new Meal({
