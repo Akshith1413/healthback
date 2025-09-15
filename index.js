@@ -339,20 +339,52 @@ app.delete('/api/meals/:id', authenticate, async (req, res) => {
 });
 app.post('/api/meals', authenticate, async (req, res) => {
   try {
+    const mealData = req.body;
+    
+    // Process items - create FoodItem records for USDA foods
+    const processedItems = await Promise.all(mealData.items.map(async (item) => {
+      if (item.fdcId) {
+        // This is a USDA food item, create a FoodItem record first
+        const foodItem = new FoodItem({
+          name: item.name,
+          brand: item.brand,
+          servingSize: `${item.servingSize} ${item.servingSizeUnit}`,
+          calories: item.calories,
+          protein: item.protein,
+          carbs: item.carbs,
+          fat: item.fat,
+          fiber: item.fiber,
+          isCustom: true,
+          createdBy: req.user._id,
+          usdaData: item.usdaData
+        });
+        
+        await foodItem.save();
+        
+        return {
+          foodItem: foodItem._id,
+          quantity: item.quantity,
+          unit: item.servingSizeUnit
+        };
+      } else {
+        // Regular food item
+        return item;
+      }
+    }));
+    
     const meal = new Meal({
-      ...req.body,
+      ...mealData,
+      items: processedItems,
       userId: req.user._id
     });
     
     await meal.save();
     await meal.populate('items.foodItem');
-    await meal.populate('items.recipe');
     res.status(201).json(meal);
   } catch (error) {
     res.status(500).json({ message: 'Server error' });
   }
 });
-
 // Water Intake Routes
 app.get('/api/water-intake', authenticate, async (req, res) => {
   try {
