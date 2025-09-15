@@ -400,8 +400,14 @@ app.post('/api/meals', authenticate, async (req, res) => {
     
     await meal.save();
     await meal.populate('items.foodItem');
-    res.status(201).json(meal);
-  } catch (error) {
+     // Save again to trigger the pre-save hook with populated data
+    await meal.save();
+    // Return the fully populated meal
+    const populatedMeal = await Meal.findById(meal._id)
+      .populate('items.foodItem')
+      .populate('items.recipe');
+    res.status(201).json(populatedMeal);
+  } catch (error) {console.error('Error creating meal:', error);
     res.status(500).json({ message: 'Server error' });
   }
 });
