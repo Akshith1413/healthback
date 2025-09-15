@@ -125,53 +125,65 @@ const MealSchema = new mongoose.Schema({
 });
 
 // In your server.js file, update the MealSchema pre-save hook
+// Also fix the Meal Schema pre-save hook
 MealSchema.pre('save', async function(next) {
-  // Calculate total nutrition from items
-  let totalCalories = 0;
-  let totalProtein = 0;
-  let totalCarbs = 0;
-  let totalFat = 0;
-  let totalFiber = 0;
-  
-  // Check if items are populated or just ObjectIds
-  if (this.items.length > 0 && typeof this.items[0].foodItem === 'object' && this.items[0].foodItem._id) {
-    // Items are populated with foodItem data
-    this.items.forEach(item => {
-      if (item.foodItem) {
-        totalCalories += (item.foodItem.calories * item.quantity);
-        totalProtein += (item.foodItem.protein * item.quantity);
-        totalCarbs += (item.foodItem.carbs * item.quantity);
-        totalFat += (item.foodItem.fat * item.quantity);
-        totalFiber += (item.foodItem.fiber * item.quantity);
-      }
-    });
-  } else {
-    // Items are not populated, we need to fetch them
-    try {
-      const mealWithPopulatedItems = await this.populate('items.foodItem');
-      mealWithPopulatedItems.items.forEach(item => {
-        if (item.foodItem) {
-          totalCalories += (item.foodItem.calories * item.quantity);
-          totalProtein += (item.foodItem.protein * item.quantity);
-          totalCarbs += (item.foodItem.carbs * item.quantity);
-          totalFat += (item.foodItem.fat * item.quantity);
-          totalFiber += (item.foodItem.fiber * item.quantity);
+  try {
+    console.log('Pre-save hook triggered for meal:', this.name);
+    
+    // Calculate total nutrition from items
+    let totalCalories = 0;
+    let totalProtein = 0;
+    let totalCarbs = 0;
+    let totalFat = 0;
+    let totalFiber = 0;
+    
+    if (this.items && this.items.length > 0) {
+      // Check if items are populated
+      const firstItem = this.items[0];
+      if (firstItem.foodItem && typeof firstItem.foodItem === 'object' && firstItem.foodItem.calories !== undefined) {
+        // Items are already populated
+        this.items.forEach(item => {
+          if (item.foodItem) {
+            totalCalories += (item.foodItem.calories || 0) * (item.quantity || 1);
+            totalProtein += (item.foodItem.protein || 0) * (item.quantity || 1);
+            totalCarbs += (item.foodItem.carbs || 0) * (item.quantity || 1);
+            totalFat += (item.foodItem.fat || 0) * (item.quantity || 1);
+            totalFiber += (item.foodItem.fiber || 0) * (item.quantity || 1);
+          }
+        });
+      } else if (firstItem.foodItem) {
+        // Items need to be populated
+        try {
+          await this.populate('items.foodItem');
+          this.items.forEach(item => {
+            if (item.foodItem) {
+              totalCalories += (item.foodItem.calories || 0) * (item.quantity || 1);
+              totalProtein += (item.foodItem.protein || 0) * (item.quantity || 1);
+              totalCarbs += (item.foodItem.carbs || 0) * (item.quantity || 1);
+              totalFat += (item.foodItem.fat || 0) * (item.quantity || 1);
+              totalFiber += (item.foodItem.fiber || 0) * (item.quantity || 1);
+            }
+          });
+        } catch (populateError) {
+          console.error('Error populating items in pre-save hook:', populateError);
         }
-      });
-    } catch (error) {
-      console.error('Error populating items for nutrition calculation:', error);
+      }
     }
+    
+    this.totalNutrition = {
+      calories: Math.round(totalCalories),
+      protein: Math.round(totalProtein * 100) / 100,
+      carbs: Math.round(totalCarbs * 100) / 100,
+      fat: Math.round(totalFat * 100) / 100,
+      fiber: Math.round(totalFiber * 100) / 100
+    };
+    
+    console.log('Calculated nutrition:', this.totalNutrition);
+    next();
+  } catch (error) {
+    console.error('Error in meal pre-save hook:', error);
+    next(error);
   }
-  
-  this.totalNutrition = {
-    calories: Math.round(totalCalories),
-    protein: Math.round(totalProtein),
-    carbs: Math.round(totalCarbs),
-    fat: Math.round(totalFat),
-    fiber: Math.round(totalFiber)
-  };
-  
-  next();
 });
 const Meal = mongoose.model('Meal', MealSchema);
 
@@ -357,9 +369,11 @@ app.delete('/api/meals/:id', authenticate, async (req, res) => {
     res.status(500).json({ message: 'Server error' });
   }
 });
+// Fixed Meal creation route in your server file
 app.post('/api/meals', authenticate, async (req, res) => {
   try {
     const mealData = req.body;
+    console.log('Received meal data:', JSON.stringify(mealData, null, 2));
     
     // Process items - create FoodItem records for USDA foods
     const processedItems = await Promise.all(mealData.items.map(async (item) => {
@@ -367,48 +381,80 @@ app.post('/api/meals', authenticate, async (req, res) => {
         // This is a USDA food item, create a FoodItem record first
         const foodItem = new FoodItem({
           name: item.name,
-          brand: item.brand,
-          servingSize: `${item.servingSize} ${item.servingSizeUnit}`,
-          calories: item.calories,
-          protein: item.protein,
-          carbs: item.carbs,
-          fat: item.fat,
-          fiber: item.fiber,
+          brand: item.brandOwner || item.brand || '',
+          servingSize: `${item.servingSize || 100} ${item.servingSizeUnit || 'g'}`,
+          calories: item.calories || 0,
+          protein: item.protein || 0,
+          carbs: item.carbs || 0,
+          fat: item.fat || 0,
+          fiber: item.fiber || 0,
           isCustom: true,
-          createdBy: req.user._id,
-          usdaData: item.usdaData
+          createdBy: req.user._id
         });
         
         await foodItem.save();
+        console.log('Created USDA food item:', foodItem.name);
         
         return {
           foodItem: foodItem._id,
-          quantity: item.quantity,
-          unit: item.servingSizeUnit
+          quantity: item.quantity || 1,
+          unit: item.servingSizeUnit || 'g'
+        };
+      } else if (item.foodItem) {
+        // Regular food item with foodItem ID
+        return {
+          foodItem: item.foodItem,
+          quantity: item.quantity || 1,
+          unit: item.unit || 'serving'
         };
       } else {
-        // Regular food item
-        return item;
+        // Handle case where item might be malformed
+        console.error('Invalid item structure:', item);
+        throw new Error('Invalid food item structure');
       }
     }));
     
+    console.log('Processed items:', processedItems);
+    
+    // Create the meal with processed items
     const meal = new Meal({
-      ...mealData,
+      userId: req.user._id,
+      name: mealData.name,
+      type: mealData.type,
       items: processedItems,
-      userId: req.user._id
+      date: new Date(mealData.date),
+      time: mealData.time || new Date().toLocaleTimeString(),
+      notes: mealData.notes || ''
     });
     
+    // Save the meal first
     await meal.save();
+    console.log('Meal saved with ID:', meal._id);
+    
+    // Populate the meal with food item details
     await meal.populate('items.foodItem');
-     // Save again to trigger the pre-save hook with populated data
+    console.log('Meal populated');
+    
+    // Calculate nutrition (this should trigger the pre-save hook)
     await meal.save();
+    console.log('Nutrition calculated');
+    
     // Return the fully populated meal
     const populatedMeal = await Meal.findById(meal._id)
       .populate('items.foodItem')
       .populate('items.recipe');
+      
+    console.log('Returning meal:', populatedMeal.name);
     res.status(201).json(populatedMeal);
-  } catch (error) {console.error('Error creating meal:', error);
-    res.status(500).json({ message: 'Server error' });
+    
+  } catch (error) {
+    console.error('Error creating meal:', error);
+    console.error('Error stack:', error.stack);
+    res.status(500).json({ 
+      message: 'Server error', 
+      error: error.message,
+      details: process.env.NODE_ENV === 'development' ? error.stack : undefined
+    });
   }
 });
 // Water Intake Routes
