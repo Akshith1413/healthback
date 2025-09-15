@@ -124,7 +124,8 @@ const MealSchema = new mongoose.Schema({
   createdAt: { type: Date, default: Date.now }
 });
 
-MealSchema.pre('save', function(next) {
+// In your server.js file, update the MealSchema pre-save hook
+MealSchema.pre('save', async function(next) {
   // Calculate total nutrition from items
   let totalCalories = 0;
   let totalProtein = 0;
@@ -132,15 +133,35 @@ MealSchema.pre('save', function(next) {
   let totalFat = 0;
   let totalFiber = 0;
   
-  this.items.forEach(item => {
-    if (item.foodItem && typeof item.foodItem === 'object') {
-      totalCalories += (item.foodItem.calories * item.quantity);
-      totalProtein += (item.foodItem.protein * item.quantity);
-      totalCarbs += (item.foodItem.carbs * item.quantity);
-      totalFat += (item.foodItem.fat * item.quantity);
-      totalFiber += (item.foodItem.fiber * item.quantity);
+  // Check if items are populated or just ObjectIds
+  if (this.items.length > 0 && typeof this.items[0].foodItem === 'object' && this.items[0].foodItem._id) {
+    // Items are populated with foodItem data
+    this.items.forEach(item => {
+      if (item.foodItem) {
+        totalCalories += (item.foodItem.calories * item.quantity);
+        totalProtein += (item.foodItem.protein * item.quantity);
+        totalCarbs += (item.foodItem.carbs * item.quantity);
+        totalFat += (item.foodItem.fat * item.quantity);
+        totalFiber += (item.foodItem.fiber * item.quantity);
+      }
+    });
+  } else {
+    // Items are not populated, we need to fetch them
+    try {
+      const mealWithPopulatedItems = await this.populate('items.foodItem');
+      mealWithPopulatedItems.items.forEach(item => {
+        if (item.foodItem) {
+          totalCalories += (item.foodItem.calories * item.quantity);
+          totalProtein += (item.foodItem.protein * item.quantity);
+          totalCarbs += (item.foodItem.carbs * item.quantity);
+          totalFat += (item.foodItem.fat * item.quantity);
+          totalFiber += (item.foodItem.fiber * item.quantity);
+        }
+      });
+    } catch (error) {
+      console.error('Error populating items for nutrition calculation:', error);
     }
-  });
+  }
   
   this.totalNutrition = {
     calories: Math.round(totalCalories),
@@ -152,7 +173,6 @@ MealSchema.pre('save', function(next) {
   
   next();
 });
-
 const Meal = mongoose.model('Meal', MealSchema);
 
 // Water Intake Schema
