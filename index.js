@@ -1,5 +1,28 @@
 module.exports = (app, mongoose, authenticate) => {
-    
+    const standardErrorResponse = (res, statusCode, message, details = null) => {
+  const response = {
+    success: false,
+    message: message,
+    ...(details && process.env.NODE_ENV === 'development' && { details })
+  };
+  
+  return res.status(statusCode).json(response);
+};
+
+const formatIndianPhoneNumber = (phoneNumber) => {
+  if (!phoneNumber) return phoneNumber;
+  
+  // Remove all non-digits
+  const cleaned = phoneNumber.replace(/\D/g, '');
+  
+  // Check if it's a valid Indian mobile number (10 digits starting with 6-9)
+  if (cleaned.length === 10 && /^[6-9]/.test(cleaned)) {
+    return `+91 ${cleaned.slice(0, 5)} ${cleaned.slice(5)}`;
+  }
+  
+  // Return original if not a standard Indian mobile number
+  return phoneNumber;
+};
 // Food Item Schema
 const FoodItemSchema = new mongoose.Schema({
   name: { type: String, required: true },
@@ -258,6 +281,298 @@ MealPlanTemplateSchema.pre('save', function(next) {
 
 const MealPlanTemplate = mongoose.model('MealPlanTemplate', MealPlanTemplateSchema);
 
+
+// Appointment Schema
+const AppointmentSchema = new mongoose.Schema({
+  // Patient Information
+  patientName: {
+    type: String,
+    required: true,
+    trim: true
+  },
+  phone: {
+    type: String,
+    required: true,
+    trim: true
+  },
+  
+  // Healthcare Provider
+  doctorName: {
+    type: String,
+    required: true,
+    trim: true
+  },
+  specialty: {
+    type: String,
+    required: true,
+    enum: [
+      'General Practice', 'Cardiology', 'Dermatology', 'Endocrinology',
+      'Gastroenterology', 'Neurology', 'Orthopedics', 'Pediatrics',
+      'Psychiatry', 'Radiology', 'Surgery', 'Urology'
+    ]
+  },
+  website: {
+    type: String,
+    trim: true
+  },
+  
+  // Appointment Details
+  date: {
+    type: Date,
+    required: true
+  },
+  time: {
+    type: String,
+    required: true,
+    match: /^([0-1]?[0-9]|2[0-3]):[0-5][0-9]$/
+  },
+  duration: {
+    type: String,
+    required: true,
+    enum: ['15 minutes', '30 minutes', '45 minutes', '1 hour', '1.5 hours', '2 hours'],
+    default: '30 minutes'
+  },
+  type: {
+    type: String,
+    required: true,
+    enum: [
+      'Regular Checkup', 'Consultation', 'Follow-up', 'Emergency',
+      'Procedure', 'Surgery', 'Lab Test', 'Vaccination'
+    ]
+  },
+  status: {
+    type: String,
+    enum: ['pending', 'confirmed', 'completed', 'cancelled'],
+    default: 'pending'
+  },
+  priority: {
+    type: String,
+    enum: ['low', 'medium', 'high'],
+    default: 'medium'
+  },
+  cost: {
+    type: Number,
+    min: 0,
+    default: 0
+  },
+  paymentMethod: {
+    type: String,
+    enum: ['insurance', 'credit_card', 'cash'],
+    default: 'insurance'
+  },
+  
+  // Location & Contact
+  clinic: {
+    type: String,
+    required: true,
+    trim: true
+  },
+  address: {
+    type: String,
+    trim: true
+  },
+  
+  // Insurance Information
+  insuranceProvider: {
+    type: String,
+    trim: true
+  },
+  policyNumber: {
+    type: String,
+    trim: true
+  },
+  
+  // Medical Information
+  symptoms: {
+    type: String,
+    trim: true
+  },
+  referralRequired: {
+    type: Boolean,
+    default: false
+  },
+  referralSource: {
+    type: String,
+    trim: true
+  },
+  
+  // Follow-up Information
+  followUpRequired: {
+    type: Boolean,
+    default: false
+  },
+  followUpDate: {
+    type: Date
+  },
+  
+  // Reminders & Notes
+  reminderSet: {
+    type: Boolean,
+    default: true
+  },
+  reminderTime: {
+    type: String,
+    enum: ['1 hour before', '2 hours before', '1 day before', '2 days before'],
+    default: '1 day before'
+  },
+  notes: {
+    type: String,
+    trim: true
+  },
+  
+  // Terms & Conditions
+  agreeToTerms: {
+    type: Boolean,
+    required: true,
+    validate: {
+      validator: function(v) {
+        return v === true;
+      },
+      message: 'You must agree to terms and conditions'
+    }
+  },
+  
+  // User reference - using your existing User model
+  userId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'User',
+    required: true
+  },
+  userEmail: {
+    type: String,
+    required: true
+  },
+  
+  // System fields
+  isActive: {
+    type: Boolean,
+    default: true
+  },
+  reminderSent: {
+    type: Boolean,
+    default: false
+  },
+  lastReminderSent: {
+    type: Date
+  }
+}, {
+  timestamps: true
+});
+
+// Indexes for better performance
+AppointmentSchema.index({ userId: 1, date: 1, time: 1 });
+AppointmentSchema.index({ userEmail: 1, date: 1 });
+AppointmentSchema.index({ date: 1, reminderSet: 1, status: 1 });
+AppointmentSchema.index({ status: 1, isActive: 1 });
+
+// Virtual for appointment datetime
+AppointmentSchema.virtual('appointmentDateTime').get(function() {
+  const dateStr = this.date.toISOString().split('T')[0];
+  return new Date(`${dateStr} ${this.time}`);
+});
+AppointmentSchema.pre('save', function(next) {
+  if (this.isModified('phone')) {
+    this.phone = formatIndianPhoneNumber(this.phone);
+  }
+  next();
+});
+// Method to check if reminder should be sent
+AppointmentSchema.methods.shouldSendReminder = function() {
+  if (!this.reminderSet || this.status !== 'confirmed' || this.reminderSent) {
+    return false;
+  }
+  
+  const now = new Date();
+  const appointmentDateTime = this.appointmentDateTime;
+  const timeDiff = appointmentDateTime.getTime() - now.getTime();
+  const hoursDiff = timeDiff / (1000 * 3600);
+  
+  switch (this.reminderTime) {
+    case '1 hour before':
+      return hoursDiff <= 1 && hoursDiff > 0;
+    case '2 hours before':
+      return hoursDiff <= 2 && hoursDiff > 0;
+    case '1 day before':
+      return hoursDiff <= 24 && hoursDiff > 0;
+    case '2 days before':
+      return hoursDiff <= 48 && hoursDiff > 0;
+    default:
+      return false;
+  }
+};
+
+const Appointment = mongoose.model('Appointment', AppointmentSchema);
+
+// Reminder Settings Schema
+const ReminderSettingsSchema = new mongoose.Schema({
+  userId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'User',
+    required: true,
+    unique: true
+  },
+  userEmail: {
+    type: String,
+    required: true
+  },
+  defaultReminderTimes: [{
+    type: String,
+    enum: ['1 hour before', '2 hours before', '1 day before', '1 week before']
+  }],
+  notificationMethods: {
+    browser: {
+      type: Boolean,
+      default: true
+    },
+    email: {
+      type: Boolean,
+      default: true
+    },
+    sms: {
+      type: Boolean,
+      default: false
+    }
+  },
+  emailAddress: {
+    type: String,
+    trim: true
+  },
+  phoneNumber: {
+    type: String,
+    trim: true
+  }
+}, {
+  timestamps: true
+});
+ReminderSettingsSchema.pre('save', function(next) {
+  if (this.isModified('phoneNumber')) {
+    this.phoneNumber = formatIndianPhoneNumber(this.phoneNumber);
+  }
+  next();
+});
+const ReminderSettings = mongoose.model('ReminderSettings', ReminderSettingsSchema);
+
+// Add this helper function
+const convertToUTC = (date) => {
+  if (!date) return date;
+  
+  // If it's a string, parse it
+  if (typeof date === 'string') {
+    date = new Date(date);
+  }
+  
+  // Convert local date to UTC by using the same UTC time
+  return new Date(Date.UTC(
+    date.getUTCFullYear(),
+    date.getUTCMonth(),
+    date.getUTCDate(),
+    date.getUTCHours(),
+    date.getUTCMinutes(),
+    date.getUTCSeconds()
+  ));
+};
+
+
 // Food Items Routes
 app.get('/api/food-items', authenticate, async (req, res) => {
   try {
@@ -274,18 +589,20 @@ app.get('/api/food-items', authenticate, async (req, res) => {
     
     res.json(foodItems);
   } catch (error) {
-    res.status(500).json({ message: 'Server error' });
+    console.error('Get food items error:', error);
+    standardErrorResponse(res, 500, 'Failed to retrieve food items', error.message);
   }
 });
 app.get('/api/food-items/:id', authenticate, async (req, res) => {
   try {
     const foodItem = await FoodItem.findById(req.params.id);
     if (!foodItem) {
-      return res.status(404).json({ message: 'Food item not found' });
+      return standardErrorResponse(res, 404, 'Food item not found');
     }
     res.json(foodItem);
   } catch (error) {
-    res.status(500).json({ message: 'Server error' });
+    console.error('Get food item error:', error);
+    standardErrorResponse(res, 500, 'Failed to retrieve food item', error.message);
   }
 });
 app.post('/api/food-items', authenticate, async (req, res) => {
@@ -299,7 +616,8 @@ app.post('/api/food-items', authenticate, async (req, res) => {
     await foodItem.save();
     res.status(201).json(foodItem);
   } catch (error) {
-    res.status(500).json({ message: 'Server error' });
+    console.error('Get food item error:', error);
+    standardErrorResponse(res, 500, 'Failed to retrieve food item', error.message);
   }
 });
 
@@ -312,7 +630,8 @@ app.get('/api/recipes', authenticate, async (req, res) => {
     
     res.json(recipes);
   } catch (error) {
-    res.status(500).json({ message: 'Server error' });
+    console.error('Get recipes error:', error);
+    standardErrorResponse(res, 500, 'Failed to retrieve food item', error.message);
   }
 });
 
@@ -327,7 +646,8 @@ app.post('/api/recipes', authenticate, async (req, res) => {
     await recipe.populate('ingredients.foodItem');
     res.status(201).json(recipe);
   } catch (error) {
-    res.status(500).json({ message: 'Server error' });
+    console.error('Create recipe error:', error);
+    standardErrorResponse(res, 500, 'Failed to create recipe', error.message); // FIXED
   }
 });
 
@@ -347,7 +667,7 @@ app.get('/api/meals', authenticate, async (req, res) => {
     
     res.json(meals);
   } catch (error) {
-    res.status(500).json({ message: 'Server error' });
+    standardErrorResponse(res, 500, 'Failed to retrieve meals', error.message);
   }
 });
 // Delete a meal
@@ -355,18 +675,19 @@ app.delete('/api/meals/:id', authenticate, async (req, res) => {
   try {
     const meal = await Meal.findById(req.params.id);
     if (!meal) {
-      return res.status(404).json({ message: 'Meal not found' });
+      return standardErrorResponse(res, 404, 'Meal not found');
     }
     
     // Check if the meal belongs to the user
     if (meal.userId.toString() !== req.user._id.toString()) {
-      return res.status(403).json({ message: 'Not authorized' });
+      return standardErrorResponse(res, 403, 'Not authorized'); 
     }
     
     await Meal.findByIdAndDelete(req.params.id);
     res.json({ message: 'Meal deleted successfully' });
   } catch (error) {
-    res.status(500).json({ message: 'Server error' });
+    console.error('Delete meal error:', error);
+    standardErrorResponse(res, 500, 'Failed to delete meal', error.message);
   }
 });
 // Fixed Meal creation route in your server file
@@ -422,7 +743,7 @@ app.post('/api/meals', authenticate, async (req, res) => {
       name: mealData.name,
       type: mealData.type,
       items: processedItems,
-      date: new Date(mealData.date),
+      date: convertToUTC(new Date(mealData.date)),
       time: mealData.time || new Date().toLocaleTimeString(),
       notes: mealData.notes || ''
     });
@@ -450,11 +771,8 @@ app.post('/api/meals', authenticate, async (req, res) => {
   } catch (error) {
     console.error('Error creating meal:', error);
     console.error('Error stack:', error.stack);
-    res.status(500).json({ 
-      message: 'Server error', 
-      error: error.message,
-      details: process.env.NODE_ENV === 'development' ? error.stack : undefined
-    });
+    standardErrorResponse(res, 500, 'Failed to create meal', error.message);
+    
   }
 });
 // Water Intake Routes
@@ -471,8 +789,9 @@ app.get('/api/water-intake', authenticate, async (req, res) => {
     const total = waterIntakes.reduce((sum, intake) => sum + intake.amount, 0);
     
     res.json({ entries: waterIntakes, total });
-  } catch (error) {
-    res.status(500).json({ message: 'Server error' });
+  }  catch (error) {
+    console.error('Get water intake error:', error);
+    standardErrorResponse(res, 500, 'Failed to retrieve water intake data', error.message);
   }
 });
 
@@ -486,7 +805,8 @@ app.post('/api/water-intake', authenticate, async (req, res) => {
     await waterIntake.save();
     res.status(201).json(waterIntake);
   } catch (error) {
-    res.status(500).json({ message: 'Server error' });
+    console.error('Create water intake error:', error);
+    standardErrorResponse(res, 500, 'Failed to create water intake entry', error.message);
   }
 });
 
@@ -527,7 +847,8 @@ app.get('/api/nutritional-goals', authenticate, async (req, res) => {
     
     res.json(goals);
   } catch (error) {
-    res.status(500).json({ message: 'Server error' });
+    console.error('Get nutritional goals error:', error);
+    standardErrorResponse(res, 500, 'Failed to retrieve nutritional goals', error.message);
   }
 });
 
@@ -547,8 +868,9 @@ app.put('/api/nutritional-goals', authenticate, async (req, res) => {
     }
     
     res.json(goals);
-  } catch (error) {
-    res.status(500).json({ message: 'Server error' });
+  }  catch (error) {
+    console.error('Update nutritional goals error:', error);
+    standardErrorResponse(res, 500, 'Failed to update nutritional goals', error.message);
   }
 });
 
@@ -832,4 +1154,492 @@ app.get('/api/recommendations', authenticate, async (req, res) => {
     res.status(500).json({ message: 'Server error' });
   }
 });
+
+// APPOINTMENT ROUTES
+
+// GET /api/appointments - Get all appointments for authenticated user
+app.get('/api/appointments', authenticate, async (req, res) => {
+  try {
+    const { status, search, sortBy = 'date', sortOrder = 'asc', page = 1, limit = 50 } = req.query;
+    
+    let query = {
+      userId: req.user._id,
+      userEmail: req.user.email,
+      isActive: true
+    };
+    
+    // Filter by status
+    if (status && status !== 'all') {
+      query.status = status;
+    }
+    
+    // Search functionality
+    if (search) {
+      const searchRegex = new RegExp(search, 'i');
+      query.$or = [
+        { patientName: searchRegex },
+        { doctorName: searchRegex },
+        { specialty: searchRegex },
+        { clinic: searchRegex }
+      ];
+    }
+    
+    // Sort options
+    const sortOptions = {};
+    if (sortBy === 'date') {
+      sortOptions.date = sortOrder === 'desc' ? -1 : 1;
+      sortOptions.time = sortOrder === 'desc' ? -1 : 1;
+    } else {
+      sortOptions[sortBy] = sortOrder === 'desc' ? -1 : 1;
+    }
+    
+    const appointments = await Appointment.find(query)
+      .sort(sortOptions)
+      .limit(limit * 1)
+      .skip((page - 1) * limit);
+    
+    const total = await Appointment.countDocuments(query);
+    
+    res.json({
+      success: true,
+      appointments,
+      totalPages: Math.ceil(total / limit),
+      currentPage: page,
+      total
+    });
+  } catch (err) {
+    console.error('Get appointments error:', err);
+    standardErrorResponse(res, 500, 'Failed to retrieve appointments', err.message);
+  }
+});
+
+// GET /api/appointments/:id - Get specific appointment
+app.get('/api/appointments/:id', authenticate, async (req, res) => {
+  try {
+    const appointment = await Appointment.findOne({
+      _id: req.params.id,
+      userId: req.user._id,
+      userEmail: req.user.email,
+      isActive: true
+    });
+    
+    if (!appointment) {
+      return standardErrorResponse(res, 404, 'Appointment not found');
+    }
+    
+    res.json({ success: true, appointment });
+  } catch (err) {
+    console.error('Get appointment error:', err);
+    standardErrorResponse(res, 500, 'Failed to retrieve appointment', err.message); // FIXED
+  }
+});
+
+// POST /api/appointments - Create new appointment
+app.post('/api/appointments', authenticate, async (req, res) => {
+  try {
+    const appointmentData = {
+      ...req.body,
+      userId: req.user._id,
+      userEmail: req.user.email
+    };
+    
+    // Validate appointment date is not in the past
+    const appointmentDate = new Date(appointmentData.date);
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+     if (appointmentData.date) {
+      appointmentData.date = convertToUTC(appointmentData.date);
+    }
+    if (appointmentDate < today) {
+      return standardErrorResponse(res, 400, 'Appointment date cannot be in the past');
+    }
+    
+    // Check for conflicting appointments
+    const conflictingAppointment = await Appointment.findOne({
+      userId: req.user._id,
+      userEmail: req.user.email,
+      date: appointmentData.date,
+      time: appointmentData.time,
+      status: { $ne: 'cancelled' },
+      isActive: true
+    });
+    
+    if (conflictingAppointment) {
+      return res.status(400).json({ 
+        success: false,
+        message: 'You already have an appointment at this date and time' 
+      });
+    }
+    
+    const appointment = new Appointment(appointmentData);
+    await appointment.save();
+    
+    res.status(201).json({
+      success: true,
+      message: 'Appointment scheduled successfully!',
+      appointment
+    });
+  } catch (err) {
+    console.error('Create appointment error:', err);
+    if (err.name === 'ValidationError') {
+      const errors = {};
+      Object.keys(err.errors).forEach(key => {
+        errors[key] = err.errors[key].message;
+      });
+      return res.status(400).json({ 
+        success: false, 
+        message: 'Validation error', 
+        errors 
+      });
+    }
+    res.status(500).json({ success: false, message: 'Server error' });
+  }
+});
+
+// PUT /api/appointments/:id - Update appointment
+app.put('/api/appointments/:id', authenticate, async (req, res) => {
+  try {
+    const appointment = await Appointment.findOne({
+      _id: req.params.id,
+      userId: req.user._id,
+      userEmail: req.user.email,
+      isActive: true
+    });
+    
+    if (!appointment) {
+      return res.status(404).json({ success: false, message: 'Appointment not found' });
+    }
+    
+    // Validate appointment date is not in the past
+    if (req.body.date) {
+      const appointmentDate = new Date(req.body.date);
+      const today = new Date();
+      today.setHours(0, 0, 0, 0);
+      
+      if (appointmentDate < today) {
+        return res.status(400).json({ 
+          success: false, 
+          message: 'Appointment date cannot be in the past' 
+        });
+      }
+    }
+    
+    // Check for conflicting appointments (exclude current appointment)
+    if (req.body.date || req.body.time) {
+      const checkDate = req.body.date || appointment.date;
+      const checkTime = req.body.time || appointment.time;
+      
+      const conflictingAppointment = await Appointment.findOne({
+        _id: { $ne: req.params.id },
+        userId: req.user._id,
+        userEmail: req.user.email,
+        date: checkDate,
+        time: checkTime,
+        status: { $ne: 'cancelled' },
+        isActive: true
+      });
+      
+      if (conflictingAppointment) {
+        return res.status(400).json({ 
+          success: false,
+          message: 'You already have another appointment at this date and time' 
+        });
+      }
+    }
+    
+    Object.keys(req.body).forEach(key => {
+      appointment[key] = req.body[key];
+    });
+    
+    // Reset reminder if date/time changed
+    if (req.body.date || req.body.time) {
+      appointment.reminderSent = false;
+      appointment.lastReminderSent = undefined;
+    }
+    if (req.body.date) {
+      req.body.date = convertToUTC(req.body.date);
+    }
+    await appointment.save();
+    
+    res.json({
+      success: true,
+      message: 'Appointment updated successfully!',
+      appointment
+    });
+  } catch (err) {
+    console.error('Update appointment error:', err);
+    if (err.name === 'ValidationError') {
+      const errors = {};
+      Object.keys(err.errors).forEach(key => {
+        errors[key] = err.errors[key].message;
+      });
+      return res.status(400).json({ 
+        success: false, 
+        message: 'Validation error', 
+        errors 
+      });
+    }
+    res.status(500).json({ success: false, message: 'Server error' });
+  }
+});
+
+// PATCH /api/appointments/:id/status - Update appointment status
+app.patch('/api/appointments/:id/status', authenticate, async (req, res) => {
+  try {
+    const { status } = req.body;
+    
+    if (!['pending', 'confirmed', 'completed', 'cancelled'].includes(status)) {
+      return res.status(400).json({ success: false, message: 'Invalid status' });
+    }
+    
+    const appointment = await Appointment.findOneAndUpdate(
+      {
+        _id: req.params.id,
+        userId: req.user._id,
+        userEmail: req.user.email,
+        isActive: true
+      },
+      { status },
+      { new: true }
+    );
+    
+    if (!appointment) {
+      return res.status(404).json({ success: false, message: 'Appointment not found' });
+    }
+    
+    res.json({
+      success: true,
+      message: `Appointment ${status}!`,
+      appointment
+    });
+  } catch (err) {
+    console.error('Update appointment status error:', err);
+    res.status(500).json({ success: false, message: 'Server error' });
+  }
+});
+
+// DELETE /api/appointments/:id - Delete appointment (soft delete)
+app.delete('/api/appointments/:id', authenticate, async (req, res) => {
+  try {
+    const appointment = await Appointment.findOneAndUpdate(
+      {
+        _id: req.params.id,
+        userId: req.user._id,
+        userEmail: req.user.email,
+        isActive: true
+      },
+      { isActive: false },
+      { new: true }
+    );
+    
+    if (!appointment) {
+      return res.status(404).json({ success: false, message: 'Appointment not found' });
+    }
+    
+    res.json({ success: true, message: 'Appointment deleted successfully!' });
+  } catch (err) {
+    console.error('Delete appointment error:', err);
+    res.status(500).json({ success: false, message: 'Server error' });
+  }
+});
+
+// GET /api/appointments/reminders/active - Get active reminders
+app.get('/api/appointments/reminders/active', authenticate, async (req, res) => {
+  try {
+    const now = new Date();
+    const twoDaysFromNow = new Date(now.getTime() + (48 * 60 * 60 * 1000));
+    
+    const appointments = await Appointment.find({
+      userId: req.user._id,
+      userEmail: req.user.email,
+      reminderSet: true,
+      status: 'confirmed',
+      isActive: true,
+      date: { $gte: now, $lte: twoDaysFromNow }
+    }).sort({ date: 1, time: 1 });
+    
+    const activeReminders = appointments.filter(appointment => 
+      appointment.shouldSendReminder()
+    );
+    
+    res.json({ success: true, reminders: activeReminders });
+  } catch (err) {
+    console.error('Get active reminders error:', err);
+    res.status(500).json({ success: false, message: 'Server error' });
+  }
+});
+
+// GET /api/appointments/statistics - Get appointment statistics
+app.get('/api/appointments/statistics', authenticate, async (req, res) => {
+  try {
+    const userId = req.user._id;
+    const userEmail = req.user.email;
+    
+    const [
+      total,
+      confirmed,
+      pending,
+      completed,
+      cancelled,
+      upcomingCount,
+      activeReminders
+    ] = await Promise.all([
+      Appointment.countDocuments({ userId, userEmail, isActive: true }),
+      Appointment.countDocuments({ userId, userEmail, status: 'confirmed', isActive: true }),
+      Appointment.countDocuments({ userId, userEmail, status: 'pending', isActive: true }),
+      Appointment.countDocuments({ userId, userEmail, status: 'completed', isActive: true }),
+      Appointment.countDocuments({ userId, userEmail, status: 'cancelled', isActive: true }),
+      Appointment.countDocuments({ 
+        userId, 
+        userEmail,
+        date: { $gte: new Date() }, 
+        status: { $in: ['confirmed', 'pending'] },
+        isActive: true 
+      }),
+      Appointment.find({
+        userId,
+        userEmail,
+        reminderSet: true,
+        status: 'confirmed',
+        isActive: true,
+        date: { $gte: new Date() }
+      })
+    ]);
+    
+    const activeReminderCount = activeReminders.filter(apt => 
+      apt.shouldSendReminder()
+    ).length;
+    
+    res.json({
+      success: true,
+      statistics: {
+        total,
+        confirmed,
+        pending,
+        completed,
+        cancelled,
+        upcoming: upcomingCount,
+        activeReminders: activeReminderCount
+      }
+    });
+  } catch (err) {
+    console.error('Get statistics error:', err);
+    res.status(500).json({ success: false, message: 'Server error' });
+  }
+});
+
+// GET /api/appointments/settings/reminders - Get reminder settings
+app.get('/api/appointments/settings/reminders', authenticate, async (req, res) => {
+  try {
+    let settings = await ReminderSettings.findOne({ 
+      userId: req.user._id,
+      userEmail: req.user.email 
+    });
+    
+    if (!settings) {
+      settings = new ReminderSettings({
+        userId: req.user._id,
+        userEmail: req.user.email,
+        emailAddress: req.user.email,
+        defaultReminderTimes: ['1 day before'],
+        notificationMethods: {
+          browser: true,
+          email: true,
+          sms: false
+        }
+      });
+      await settings.save();
+    }
+    
+    res.json({ success: true, settings });
+  } catch (err) {
+    console.error('Get reminder settings error:', err);
+    res.status(500).json({ success: false, message: 'Server error' });
+  }
+});
+
+// PUT /api/appointments/settings/reminders - Update reminder settings
+app.put('/api/appointments/settings/reminders', authenticate, async (req, res) => {
+  try {
+    const settings = await ReminderSettings.findOneAndUpdate(
+      { 
+        userId: req.user._id,
+        userEmail: req.user.email 
+      },
+      {
+        ...req.body,
+        userId: req.user._id,
+        userEmail: req.user.email
+      },
+      { new: true, upsert: true }
+    );
+    
+    res.json({
+      success: true,
+      message: 'Reminder settings updated successfully!',
+      settings
+    });
+  } catch (err) {
+    console.error('Update reminder settings error:', err);
+    res.status(500).json({ success: false, message: 'Server error' });
+  }
+});
+
+// GET /api/appointments/by-date/:date - Get appointments for specific date
+app.get('/api/appointments/by-date/:date', authenticate, async (req, res) => {
+  try {
+    const { date } = req.params;
+    
+    // Create start and end of day in UTC
+    const startDate = new Date(date);
+    startDate.setUTCHours(0, 0, 0, 0);
+    
+    const endDate = new Date(date);
+    endDate.setUTCHours(23, 59, 59, 999);
+
+    const appointments = await Appointment.find({
+      userId: req.user._id,
+      userEmail: req.user.email,
+      date: {
+        $gte: startDate,
+        $lt: endDate
+      },
+      isActive: true
+    }).sort({ time: 1 });
+    
+    res.json({ success: true, appointments, date: date });
+  } catch (err) {
+    console.error('Get appointments by date error:', err);
+    standardErrorResponse(res, 500, 'Failed to retrieve appointments', err.message);
+  }
+});
+
+// GET /api/appointments/upcoming - Get upcoming appointments (next 7 days)
+app.get('/api/appointments/upcoming', authenticate, async (req, res) => {
+  try {
+    const now = new Date();
+    const nextWeek = new Date(now.getTime() + (7 * 24 * 60 * 60 * 1000));
+    
+    const appointments = await Appointment.find({
+      userId: req.user._id,
+      userEmail: req.user.email,
+      date: { $gte: now, $lte: nextWeek },
+      status: { $in: ['confirmed', 'pending'] },
+      isActive: true
+    }).sort({ date: 1, time: 1 }).limit(10);
+    
+    res.json({ success: true, appointments });
+  } catch (err) {
+    console.error('Get upcoming appointments error:', err);
+    res.status(500).json({ success: false, message: 'Server error' });
+  }
+});
+
+
+// Helper function to format phone number (you can customize this based on your needs)
+
+console.log('Appointment scheduling API routes loaded successfully');
+
+
+
 };
