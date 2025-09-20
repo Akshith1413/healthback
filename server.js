@@ -16,11 +16,29 @@ app.use(cors());
 app.use(express.json());
 
 // Rate limiting
-const limiter = rateLimit({
-  windowMs: 15 * 60 * 1000, // 15 minutes
-  max: 100 // limit each IP to 100 requests per windowMs
+const globalLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 min
+  max: 100, // each IP can make 100 requests
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: {
+    success: false,
+    message: "Too many requests from this IP. Please try again later."
+  }
 });
-app.use(limiter);
+app.use(globalLimiter);
+
+// Auth limiter (strict, only for signin/signup)
+const authLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 min
+  max: 5, // only 5 attempts
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: {
+    success: false,
+    message: "Too many login/signup attempts. Please wait 15 minutes and try again."
+  }
+});
 
 // MongoDB Connection
 mongoose.connect(process.env.MONGO_URI)
@@ -530,10 +548,10 @@ const generateToken = (userId) => {
 }
 
 // Signup Route
-app.post('/signup', validateInputs('signup'), async (req, res) => {
+app.post('/signup', authLimiter, validateInputs('signup'), async (req, res) => {
   const errors = validationResult(req);
   if (!errors.isEmpty()) {
-    return res.status(400).json({ errors: errors.array() });
+    return res.status(400).json({ success: false, errors: errors.array() });
   }
 
   try {
@@ -569,7 +587,7 @@ app.post('/signup', validateInputs('signup'), async (req, res) => {
 });
 
 // Signin Route
-app.post('/signin', validateInputs('signin'), async (req, res) => {
+app.post('/signin', authLimiter, validateInputs('signin'), async (req, res) => {
   const errors = validationResult(req);
   if (!errors.isEmpty()) {
     return res.status(400).json({ errors: errors.array() });
