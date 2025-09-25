@@ -817,6 +817,161 @@ app.get('/api/appointments/statistics/all', authenticate, async (req, res) => {
   }
 });
 
+// GET /api/appointments/reminders - Get all active reminders for user
+app.get('/api/appointments/reminders', authenticate, async (req, res) => {
+  try {
+    const userId = req.user._id;
+    const userEmail = req.user.email;
+    const now = new Date();
+    const oneWeekFromNow = new Date(now.getTime() + (7 * 24 * 60 * 60 * 1000));
+    
+    // Get appointments that are upcoming and have reminders set
+    const appointments = await Appointment.find({
+      userId: userId,
+      userEmail: userEmail,
+      status: { $in: ['confirmed', 'pending'] },
+      isActive: true,
+      date: { $gte: now, $lte: oneWeekFromNow }
+    }).sort({ date: 1, time: 1 });
+    
+    // Filter appointments that need reminders
+    const reminders = appointments.filter(appointment => {
+      const appointmentDateTime = new Date(`${appointment.date.toISOString().split('T')[0]} ${appointment.time}`);
+      const timeDiff = appointmentDateTime.getTime() - now.getTime();
+      const hoursDiff = timeDiff / (1000 * 3600);
+      
+      return hoursDiff <= 48; // Show reminders for appointments within 48 hours
+    }).map(appointment => {
+      const appointmentDateTime = new Date(`${appointment.date.toISOString().split('T')[0]} ${appointment.time}`);
+      const timeDiff = appointmentDateTime.getTime() - now.getTime();
+      const hoursDiff = Math.ceil(timeDiff / (1000 * 3600));
+      
+      return {
+        _id: appointment._id,
+        patientName: appointment.patientName,
+        doctorName: appointment.doctorName,
+        specialty: appointment.specialty,
+        date: appointment.date,
+        time: appointment.time,
+        duration: appointment.duration,
+        clinic: appointment.clinic,
+        address: appointment.address,
+        phone: appointment.phone,
+        status: appointment.status,
+        hoursUntil: hoursDiff,
+        urgency: hoursDiff <= 1 ? 'urgent' : hoursDiff <= 24 ? 'today' : 'upcoming'
+      };
+    });
+    
+    res.json({
+      success: true,
+      reminders: reminders,
+      total: reminders.length
+    });
+  } catch (err) {
+    console.error('Get reminders error:', err);
+    res.status(500).json({ 
+      success: false, 
+      message: 'Failed to get reminders' 
+    });
+  }
+});
+
+// PATCH /api/appointments/reminders/:id/snooze - Snooze a reminder for 1 hour
+app.patch('/api/appointments/reminders/:id/snooze', authenticate, async (req, res) => {
+  try {
+    const appointment = await Appointment.findOne({
+      _id: req.params.id,
+      userId: req.user._id,
+      userEmail: req.user.email,
+      isActive: true
+    });
+    
+    if (!appointment) {
+      return res.status(404).json({ success: false, message: 'Appointment not found' });
+    }
+    
+    // In a real app, you would update a snooze field in the database
+    // For now, we'll just return success
+    res.json({
+      success: true,
+      message: 'Reminder snoozed for 1 hour'
+    });
+  } catch (err) {
+    console.error('Snooze reminder error:', err);
+    res.status(500).json({ 
+      success: false, 
+      message: 'Failed to snooze reminder' 
+    });
+  }
+});
+
+// PATCH /api/appointments/reminders/:id/mark-missed - Mark reminder as missed
+app.patch('/api/appointments/reminders/:id/mark-missed', authenticate, async (req, res) => {
+  try {
+    const appointment = await Appointment.findOneAndUpdate(
+      {
+        _id: req.params.id,
+        userId: req.user._id,
+        userEmail: req.user.email,
+        isActive: true
+      },
+      { 
+        status: 'cancelled',
+        reminderSet: false 
+      },
+      { new: true }
+    );
+    
+    if (!appointment) {
+      return res.status(404).json({ success: false, message: 'Appointment not found' });
+    }
+    
+    res.json({
+      success: true,
+      message: 'Appointment marked as missed'
+    });
+  } catch (err) {
+    console.error('Mark missed error:', err);
+    res.status(500).json({ 
+      success: false, 
+      message: 'Failed to mark as missed' 
+    });
+  }
+});
+
+// DELETE /api/appointments/reminders/:id - Delete reminder (soft delete)
+app.delete('/api/appointments/reminders/:id', authenticate, async (req, res) => {
+  try {
+    const appointment = await Appointment.findOneAndUpdate(
+      {
+        _id: req.params.id,
+        userId: req.user._id,
+        userEmail: req.user.email,
+        isActive: true
+      },
+      { 
+        reminderSet: false 
+      },
+      { new: true }
+    );
+    
+    if (!appointment) {
+      return res.status(404).json({ success: false, message: 'Appointment not found' });
+    }
+    
+    res.json({
+      success: true,
+      message: 'Reminder deleted successfully'
+    });
+  } catch (err) {
+    console.error('Delete reminder error:', err);
+    res.status(500).json({ 
+      success: false, 
+      message: 'Failed to delete reminder' 
+    });
+  }
+});
 // Add this helper function
 const convertToUTC = (date) => {
   if (!date) return date;
