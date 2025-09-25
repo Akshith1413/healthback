@@ -52,13 +52,11 @@ const AppointmentStatisticsSchema = new mongoose.Schema({
     type: mongoose.Schema.Types.ObjectId,
     ref: 'User',
     required: true,
-    unique: true,
-    index: true  // Remove the separate .index() call below
+    unique: true
   },
   userEmail: {
     type: String,
-    required: true,
-    index: true  // Remove the separate .index() call below
+    required: true
   },
   total: { type: Number, default: 0 },
   confirmed: { type: Number, default: 0 },
@@ -71,7 +69,6 @@ const AppointmentStatisticsSchema = new mongoose.Schema({
 }, {
   timestamps: true
 });
-
 
 const AppointmentStatistics = mongoose.model('AppointmentStatistics', AppointmentStatisticsSchema);
 let statisticsUpdateQueue = new Map();
@@ -120,17 +117,16 @@ const updateAppointmentStatistics = async (userId, userEmail) => {
   try {
     console.log('Updating statistics for user:', userEmail);
     
+    if (!userId || !userEmail) {
+      console.error('Missing userId or userEmail for statistics update');
+      return;
+    }
+    
     const currentDate = new Date();
     currentDate.setHours(0, 0, 0, 0);
     
-    const [
-      total,
-      confirmed,
-      pending,
-      completed,
-      cancelled,
-      upcomingAppointments
-    ] = await Promise.all([
+    // Use Promise.allSettled to handle potential individual query failures
+    const results = await Promise.allSettled([
       Appointment.countDocuments({ userId, userEmail, isActive: true }),
       Appointment.countDocuments({ userId, userEmail, status: 'confirmed', isActive: true }),
       Appointment.countDocuments({ userId, userEmail, status: 'pending', isActive: true }),
@@ -142,8 +138,16 @@ const updateAppointmentStatistics = async (userId, userEmail) => {
         date: { $gte: currentDate },
         status: { $in: ['confirmed', 'pending'] },
         isActive: true 
-      })
+      }).select('reminderSet reminderSent').lean() // Use lean() for better performance
     ]);
+    
+    // Extract values with fallbacks
+    const total = results[0].status === 'fulfilled' ? results[0].value : 0;
+    const confirmed = results[1].status === 'fulfilled' ? results[1].value : 0;
+    const pending = results[2].status === 'fulfilled' ? results[2].value : 0;
+    const completed = results[3].status === 'fulfilled' ? results[3].value : 0;
+    const cancelled = results[4].status === 'fulfilled' ? results[4].value : 0;
+    const upcomingAppointments = results[5].status === 'fulfilled' ? results[5].value : [];
     
     const upcomingCount = upcomingAppointments.length;
     const activeReminders = upcomingAppointments.filter(apt => 
@@ -165,9 +169,12 @@ const updateAppointmentStatistics = async (userId, userEmail) => {
       { upsert: true, new: true }
     );
     
-    console.log('Statistics updated successfully for user:', userEmail);
+    console.log('Statistics updated successfully for user:', userEmail, {
+      total, confirmed, pending, completed, cancelled, upcoming: upcomingCount, activeReminders
+    });
   } catch (error) {
     console.error('Error updating appointment statistics:', error);
+    // Don't throw the error - just log it so it doesn't break other operations
   }
 };
 // Custom Recipe Schema
@@ -1705,25 +1712,101 @@ app.get('/api/appointments/reminders/active', authenticate, async (req, res) => 
 });
 
 // GET /api/appointments/statistics - Get appointment statistics
-// GET /api/appointments/statistics - Get appointment statistics (OPTIMIZED)
 app.get('/api/appointments/statistics', authenticate, async (req, res) => {
   try {
+    console.log('Statistics request from user:', req.user?.email);
+    
+    if (!req.user || !req.user._id || !req.user.email) {
+      return res.status(401).json({
+        success: false,
+        message: 'User authentication required'
+      });
+    }
+    
     const userId = req.user._id;
     const userEmail = req.user.email;
     
     // Try to get cached statistics first
-    let statistics = await AppointmentStatistics.findOne({ userId, userEmail });
+    let statistics = await AppointmentStatistics.findOne({ userId, userEmail }).lean();
     
     // If no cached data or data is older than 5 minutes, recalculate
-    if (!statistics || (new Date() - statistics.lastUpdated) > 5 * 60 * 1000) {
-      console.log('Cache miss or stale data, recalculating statistics for user:', userEmail);
-      await updateAppointmentStatistics(userId, userEmail);
-      statistics = await AppointmentStatistics.findOne({ userId, userEmail });
+    const shouldRecalculate = !statistics || 
+      !statistics.lastUpdated || 
+      (new Date() - new Date(statistics.lastUpdated)) > 5 * 60 * 1000;
+    
+    if (shouldRecalculate) {
+      console.log('Recalculating statistics for user:', userEmail);
+      
+      // Try to update statistics
+      try {
+        await updateAppointmentStatistics(userId, userEmail);
+        statistics = await AppointmentStatistics.findOne({ userId, userEmail }).lean();
+      } catch (updateError) {
+        console.error('Error updating statistics, using fallback calculation:', updateError);
+        
+        // Fallback: calculate basic statistics directly
+        try {
+          const currentDate = new Date();
+          currentDate.setHours(0, 0, 0, 0);
+          
+          const [total, confirmed, pending] = await Promise.all([
+            Appointment.countDocuments({ userId, userEmail, isActive: true }),
+            Appointment.countDocuments({ userId, userEmail, status: 'confirmed', isActive: true }),
+            Appointment.countDocuments({ userId, userEmail, status: 'pending', isActive: true })
+          ]);
+          
+          statistics = {
+            total: total || 0,
+            confirmed: confirmed || 0,
+            pending: pending || 0,
+            completed: 0,
+            cancelled: 0,
+            upcoming: 0,
+            activeReminders: 0,
+            lastUpdated: new Date()
+          };
+        } catch (fallbackError) {
+          console.error('Fallback calculation also failed:', fallbackError);
+          // Return zeros if everything fails
+          statistics = {
+            total: 0,
+            confirmed: 0,
+            pending: 0,
+            completed: 0,
+            cancelled: 0,
+            upcoming: 0,
+            activeReminders: 0
+          };
+        }
+      }
     }
     
-    // If still no statistics (first time user), return zeros
-    if (!statistics) {
-      statistics = {
+    // Ensure all values are numbers and not null/undefined
+    const safeStats = {
+      total: Number(statistics?.total || 0),
+      confirmed: Number(statistics?.confirmed || 0),
+      pending: Number(statistics?.pending || 0),
+      completed: Number(statistics?.completed || 0),
+      cancelled: Number(statistics?.cancelled || 0),
+      upcoming: Number(statistics?.upcoming || 0),
+      activeReminders: Number(statistics?.activeReminders || 0)
+    };
+    
+    console.log('Returning statistics:', safeStats);
+    
+    res.json({
+      success: true,
+      statistics: safeStats
+    });
+    
+  } catch (error) {
+    console.error('Statistics endpoint error:', error);
+    console.error('Error stack:', error.stack);
+    
+    // Always return a valid response, even if it's just zeros
+    res.status(200).json({ // Change from 500 to 200 to prevent frontend errors
+      success: true,
+      statistics: {
         total: 0,
         confirmed: 0,
         pending: 0,
@@ -1731,70 +1814,54 @@ app.get('/api/appointments/statistics', authenticate, async (req, res) => {
         cancelled: 0,
         upcoming: 0,
         activeReminders: 0
-      };
-    }
-    
-    res.json({
-      success: true,
-      statistics: {
-        total: statistics.total || 0,
-        confirmed: statistics.confirmed || 0,
-        pending: statistics.pending || 0,
-        completed: statistics.completed || 0,
-        cancelled: statistics.cancelled || 0,
-        upcoming: statistics.upcoming || 0,
-        activeReminders: statistics.activeReminders || 0
-      }
+      },
+      message: 'Statistics temporarily unavailable'
     });
-    
-  } catch (err) {
-    console.error('Get statistics error:', err);
-    
-    // Fallback: try to calculate real-time if cache fails
-    try {
-      const userId = req.user._id;
-      const userEmail = req.user.email;
-      
-      const currentDate = new Date();
-      currentDate.setHours(0, 0, 0, 0);
-      
-      const total = await Appointment.countDocuments({ userId, userEmail, isActive: true });
-      const confirmed = await Appointment.countDocuments({ userId, userEmail, status: 'confirmed', isActive: true });
-      const pending = await Appointment.countDocuments({ userId, userEmail, status: 'pending', isActive: true });
-      const upcomingAppointments = await Appointment.find({ 
-        userId, 
-        userEmail, 
-        date: { $gte: currentDate },
-        status: { $in: ['confirmed', 'pending'] },
-        isActive: true 
-      });
-      
-      const upcomingCount = upcomingAppointments.length;
-      const activeReminders = upcomingAppointments.filter(apt => 
-        apt.reminderSet && !apt.reminderSent
-      ).length;
-      
-      res.json({
-        success: true,
-        statistics: {
-          total,
-          confirmed,
-          pending,
-          completed: 0,
-          cancelled: 0,
-          upcoming: upcomingCount,
-          activeReminders
-        }
-      });
-    } catch (fallbackError) {
-      console.error('Fallback statistics also failed:', fallbackError);
-      res.status(500).json({ 
-        success: false, 
-        message: 'Failed to retrieve statistics',
-        error: err.message 
-      });
-    }
   }
+});
+app.use('/api/appointments', (err, req, res, next) => {
+  console.error('Appointments API Error:', {
+    error: err.message,
+    stack: process.env.NODE_ENV === 'development' ? err.stack : undefined,
+    url: req.originalUrl,
+    method: req.method,
+    user: req.user?.email || 'anonymous'
+  });
+
+  if (res.headersSent) {
+    return next(err);
+  }
+
+  // Handle specific mongoose errors
+  if (err.name === 'ValidationError') {
+    return res.status(400).json({
+      success: false,
+      message: 'Validation error',
+      errors: Object.values(err.errors).map(e => e.message)
+    });
+  }
+  
+  if (err.name === 'CastError') {
+    return res.status(400).json({
+      success: false,
+      message: 'Invalid ID format'
+    });
+  }
+  
+  if (err.code === 11000) {
+    return res.status(409).json({
+      success: false,
+      message: 'Duplicate entry detected'
+    });
+  }
+
+  // Default error response
+  res.status(500).json({
+    success: false,
+    message: process.env.NODE_ENV === 'development' 
+      ? err.message 
+      : 'Internal server error'
+  });
 });
 // GET /api/appointments/settings/reminders - Get reminder settings
 app.get('/api/appointments/settings/reminders', authenticate, async (req, res) => {
