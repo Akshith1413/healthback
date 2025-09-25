@@ -168,7 +168,14 @@ const updateAppointmentStatistics = async (userId, userEmail) => {
       },
       { upsert: true, new: true }
     );
-    
+    const safeGetReminderStatus = (appointment) => {
+  try {
+    return appointment.reminderSet && !appointment.reminderSent;
+  } catch (error) {
+    console.warn('Error reading reminder status:', error);
+    return false;
+  }
+};
     console.log('Statistics updated successfully for user:', userEmail, {
       total, confirmed, pending, completed, cancelled, upcoming: upcomingCount, activeReminders
     });
@@ -735,7 +742,16 @@ AppointmentSchema.post('findOneAndDelete', function(doc) {
     debouncedUpdateStatistics(doc.userId, doc.userEmail);
   }
 });
-
+AppointmentSchema.methods.toJSON = function() {
+  const appointment = this.toObject();
+  
+  // Ensure all required fields are present
+  if (!appointment.reminderSet) appointment.reminderSet = true;
+  if (!appointment.reminderSent) appointment.reminderSent = false;
+  if (!appointment.isActive) appointment.isActive = true;
+  
+  return appointment;
+};
 const Appointment = mongoose.model('Appointment', AppointmentSchema);
 
 // Reminder Settings Schema
@@ -1712,6 +1728,7 @@ app.get('/api/appointments/reminders/active', authenticate, async (req, res) => 
 });
 
 // GET /api/appointments/statistics - Get appointment statistics
+// GET /api/appointments/statistics - Get appointment statistics
 app.get('/api/appointments/statistics', authenticate, async (req, res) => {
   try {
     console.log('Statistics request from user:', req.user?.email);
@@ -1726,85 +1743,72 @@ app.get('/api/appointments/statistics', authenticate, async (req, res) => {
     const userId = req.user._id;
     const userEmail = req.user.email;
     
-    // Try to get cached statistics first
-    let statistics = await AppointmentStatistics.findOne({ userId, userEmail }).lean();
-    
-    // If no cached data or data is older than 5 minutes, recalculate
-    const shouldRecalculate = !statistics || 
-      !statistics.lastUpdated || 
-      (new Date() - new Date(statistics.lastUpdated)) > 5 * 60 * 1000;
-    
-    if (shouldRecalculate) {
-      console.log('Recalculating statistics for user:', userEmail);
+    // Simple direct calculation without caching for reliability
+    try {
+      const currentDate = new Date();
+      currentDate.setHours(0, 0, 0, 0);
       
-      // Try to update statistics
-      try {
-        await updateAppointmentStatistics(userId, userEmail);
-        statistics = await AppointmentStatistics.findOne({ userId, userEmail }).lean();
-      } catch (updateError) {
-        console.error('Error updating statistics, using fallback calculation:', updateError);
-        
-        // Fallback: calculate basic statistics directly
-        try {
-          const currentDate = new Date();
-          currentDate.setHours(0, 0, 0, 0);
-          
-          const [total, confirmed, pending] = await Promise.all([
-            Appointment.countDocuments({ userId, userEmail, isActive: true }),
-            Appointment.countDocuments({ userId, userEmail, status: 'confirmed', isActive: true }),
-            Appointment.countDocuments({ userId, userEmail, status: 'pending', isActive: true })
-          ]);
-          
-          statistics = {
-            total: total || 0,
-            confirmed: confirmed || 0,
-            pending: pending || 0,
-            completed: 0,
-            cancelled: 0,
-            upcoming: 0,
-            activeReminders: 0,
-            lastUpdated: new Date()
-          };
-        } catch (fallbackError) {
-          console.error('Fallback calculation also failed:', fallbackError);
-          // Return zeros if everything fails
-          statistics = {
-            total: 0,
-            confirmed: 0,
-            pending: 0,
-            completed: 0,
-            cancelled: 0,
-            upcoming: 0,
-            activeReminders: 0
-          };
-        }
-      }
+      // Use Promise.all for parallel queries
+      const [total, confirmed, pending, completed, cancelled, upcomingAppointments] = await Promise.all([
+        Appointment.countDocuments({ userId, userEmail, isActive: true }).catch(() => 0),
+        Appointment.countDocuments({ userId, userEmail, status: 'confirmed', isActive: true }).catch(() => 0),
+        Appointment.countDocuments({ userId, userEmail, status: 'pending', isActive: true }).catch(() => 0),
+        Appointment.countDocuments({ userId, userEmail, status: 'completed', isActive: true }).catch(() => 0),
+        Appointment.countDocuments({ userId, userEmail, status: 'cancelled', isActive: true }).catch(() => 0),
+        Appointment.find({ 
+          userId, 
+          userEmail, 
+          date: { $gte: currentDate },
+          status: { $in: ['confirmed', 'pending'] },
+          isActive: true 
+        }).select('reminderSet reminderSent').lean().catch(() => [])
+      ]);
+      
+      const upcomingCount = Array.isArray(upcomingAppointments) ? upcomingAppointments.length : 0;
+      const activeReminders = Array.isArray(upcomingAppointments) ? 
+        upcomingAppointments.filter(apt => apt.reminderSet && !apt.reminderSent).length : 0;
+      
+      const statistics = {
+        total: Number(total || 0),
+        confirmed: Number(confirmed || 0),
+        pending: Number(pending || 0),
+        completed: Number(completed || 0),
+        cancelled: Number(cancelled || 0),
+        upcoming: Number(upcomingCount || 0),
+        activeReminders: Number(activeReminders || 0)
+      };
+      
+      console.log('Calculated statistics:', statistics);
+      
+      res.json({
+        success: true,
+        statistics: statistics
+      });
+      
+    } catch (calculationError) {
+      console.error('Statistics calculation error:', calculationError);
+      
+      // Return safe default values
+      res.json({
+        success: true,
+        statistics: {
+          total: 0,
+          confirmed: 0,
+          pending: 0,
+          completed: 0,
+          cancelled: 0,
+          upcoming: 0,
+          activeReminders: 0
+        },
+        message: 'Using default statistics due to calculation error'
+      });
     }
     
-    // Ensure all values are numbers and not null/undefined
-    const safeStats = {
-      total: Number(statistics?.total || 0),
-      confirmed: Number(statistics?.confirmed || 0),
-      pending: Number(statistics?.pending || 0),
-      completed: Number(statistics?.completed || 0),
-      cancelled: Number(statistics?.cancelled || 0),
-      upcoming: Number(statistics?.upcoming || 0),
-      activeReminders: Number(statistics?.activeReminders || 0)
-    };
-    
-    console.log('Returning statistics:', safeStats);
-    
-    res.json({
-      success: true,
-      statistics: safeStats
-    });
-    
   } catch (error) {
-    console.error('Statistics endpoint error:', error);
-    console.error('Error stack:', error.stack);
+    console.error('Statistics endpoint overall error:', error);
     
-    // Always return a valid response, even if it's just zeros
-    res.status(200).json({ // Change from 500 to 200 to prevent frontend errors
+    // Always return a valid response
+    res.json({
       success: true,
       statistics: {
         total: 0,
@@ -1819,6 +1823,8 @@ app.get('/api/appointments/statistics', authenticate, async (req, res) => {
     });
   }
 });
+
+
 app.use('/api/appointments', (err, req, res, next) => {
   console.error('Appointments API Error:', {
     error: err.message,
