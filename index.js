@@ -552,6 +552,271 @@ ReminderSettingsSchema.pre('save', function(next) {
 });
 const ReminderSettings = mongoose.model('ReminderSettings', ReminderSettingsSchema);
 
+// Appointment Statistics Schema
+const AppointmentStatsSchema = new mongoose.Schema({
+  userId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'User',
+    required: true
+  },
+  userEmail: {
+    type: String,
+    required: true
+  },
+  total: {
+    type: Number,
+    default: 0
+  },
+  confirmed: {
+    type: Number,
+    default: 0
+  },
+  pending: {
+    type: Number,
+    default: 0
+  },
+  activeReminders: {
+    type: Number,
+    default: 0
+  },
+  completed: {
+    type: Number,
+    default: 0
+  },
+  lastUpdated: {
+    type: Date,
+    default: Date.now
+  }
+}, {
+  timestamps: true
+});
+
+// Create index for faster queries
+AppointmentStatsSchema.index({ userId: 1, userEmail: 1 });
+
+const AppointmentStats = mongoose.model('AppointmentStats', AppointmentStatsSchema);
+// GET /api/appointments/count/total - Get total appointments count for user
+app.get('/api/appointments/count/total', authenticate, async (req, res) => {
+  try {
+    const userId = req.user._id;
+    const userEmail = req.user.email;
+    
+    const totalCount = await Appointment.countDocuments({ 
+      userId: userId, 
+      userEmail: userEmail, 
+      isActive: true 
+    });
+    
+    res.json({
+      success: true,
+      count: totalCount,
+      message: `Total appointments: ${totalCount}`
+    });
+  } catch (err) {
+    console.error('Get total appointments count error:', err);
+    res.status(500).json({ 
+      success: false, 
+      message: 'Failed to get total appointments count' 
+    });
+  }
+});
+// GET /api/appointments/count/pending - Get pending appointments count for user
+app.get('/api/appointments/count/pending', authenticate, async (req, res) => {
+  try {
+    const userId = req.user._id;
+    const userEmail = req.user.email;
+    
+    const pendingCount = await Appointment.countDocuments({ 
+      userId: userId, 
+      userEmail: userEmail, 
+      status: 'pending',
+      isActive: true 
+    });
+    
+    res.json({
+      success: true,
+      count: pendingCount,
+      message: `Pending appointments: ${pendingCount}`
+    });
+  } catch (err) {
+    console.error('Get pending appointments count error:', err);
+    res.status(500).json({ 
+      success: false, 
+      message: 'Failed to get pending appointments count' 
+    });
+  }
+});
+// GET /api/appointments/count/confirmed - Get confirmed appointments count for user
+app.get('/api/appointments/count/confirmed', authenticate, async (req, res) => {
+  try {
+    const userId = req.user._id;
+    const userEmail = req.user.email;
+    
+    const confirmedCount = await Appointment.countDocuments({ 
+      userId: userId, 
+      userEmail: userEmail, 
+      status: 'confirmed',
+      isActive: true 
+    });
+    
+    res.json({
+      success: true,
+      count: confirmedCount,
+      message: `Confirmed appointments: ${confirmedCount}`
+    });
+  } catch (err) {
+    console.error('Get confirmed appointments count error:', err);
+    res.status(500).json({ 
+      success: false, 
+      message: 'Failed to get confirmed appointments count' 
+    });
+  }
+});
+// GET /api/appointments/count/completed - Get completed appointments count for user
+app.get('/api/appointments/count/completed', authenticate, async (req, res) => {
+  try {
+    const userId = req.user._id;
+    const userEmail = req.user.email;
+    
+    const completedCount = await Appointment.countDocuments({ 
+      userId: userId, 
+      userEmail: userEmail, 
+      status: 'completed',
+      isActive: true 
+    });
+    
+    res.json({
+      success: true,
+      count: completedCount,
+      message: `Completed appointments: ${completedCount}`
+    });
+  } catch (err) {
+    console.error('Get completed appointments count error:', err);
+    res.status(500).json({ 
+      success: false, 
+      message: 'Failed to get completed appointments count' 
+    });
+  }
+});
+// GET /api/appointments/count/active-reminders - Get active reminders count for user
+app.get('/api/appointments/count/active-reminders', authenticate, async (req, res) => {
+  try {
+    const userId = req.user._id;
+    const userEmail = req.user.email;
+    const now = new Date();
+    const twoDaysFromNow = new Date(now.getTime() + (48 * 60 * 60 * 1000));
+    
+    // First get appointments that match the criteria
+    const appointments = await Appointment.find({
+      userId: userId,
+      userEmail: userEmail,
+      reminderSet: true,
+      status: 'confirmed',
+      isActive: true,
+      date: { $gte: now, $lte: twoDaysFromNow }
+    });
+    
+    // Filter appointments that should send reminders
+    const activeRemindersCount = appointments.filter(appointment => 
+      appointment.shouldSendReminder()
+    ).length;
+    
+    res.json({
+      success: true,
+      count: activeRemindersCount,
+      message: `Active reminders: ${activeRemindersCount}`
+    });
+  } catch (err) {
+    console.error('Get active reminders count error:', err);
+    res.status(500).json({ 
+      success: false, 
+      message: 'Failed to get active reminders count' 
+    });
+  }
+});
+// GET /api/appointments/statistics/all - Get all statistics in one call
+app.get('/api/appointments/statistics/all', authenticate, async (req, res) => {
+  try {
+    const userId = req.user._id;
+    const userEmail = req.user.email;
+    const now = new Date();
+    const twoDaysFromNow = new Date(now.getTime() + (48 * 60 * 60 * 1000));
+    
+    // Get all counts in parallel for better performance
+    const [
+      totalCount,
+      pendingCount,
+      confirmedCount,
+      completedCount,
+      appointmentsForReminders
+    ] = await Promise.all([
+      // Total appointments
+      Appointment.countDocuments({ 
+        userId: userId, 
+        userEmail: userEmail, 
+        isActive: true 
+      }),
+      
+      // Pending appointments
+      Appointment.countDocuments({ 
+        userId: userId, 
+        userEmail: userEmail, 
+        status: 'pending',
+        isActive: true 
+      }),
+      
+      // Confirmed appointments
+      Appointment.countDocuments({ 
+        userId: userId, 
+        userEmail: userEmail, 
+        status: 'confirmed',
+        isActive: true 
+      }),
+      
+      // Completed appointments
+      Appointment.countDocuments({ 
+        userId: userId, 
+        userEmail: userEmail, 
+        status: 'completed',
+        isActive: true 
+      }),
+      
+      // Appointments for reminders calculation
+      Appointment.find({
+        userId: userId,
+        userEmail: userEmail,
+        reminderSet: true,
+        status: 'confirmed',
+        isActive: true,
+        date: { $gte: now, $lte: twoDaysFromNow }
+      })
+    ]);
+    
+    // Calculate active reminders
+    const activeRemindersCount = appointmentsForReminders.filter(appointment => 
+      appointment.shouldSendReminder()
+    ).length;
+    
+    res.json({
+      success: true,
+      statistics: {
+        total: totalCount,
+        pending: pendingCount,
+        confirmed: confirmedCount,
+        completed: completedCount,
+        activeReminders: activeRemindersCount
+      },
+      message: 'Statistics retrieved successfully'
+    });
+  } catch (err) {
+    console.error('Get all statistics error:', err);
+    res.status(500).json({ 
+      success: false, 
+      message: 'Failed to get statistics' 
+    });
+  }
+});
+
 // Add this helper function
 const convertToUTC = (date) => {
   if (!date) return date;
@@ -1469,78 +1734,6 @@ app.get('/api/appointments/reminders/active', authenticate, async (req, res) => 
   }
 });
 
-// GET /api/appointments/statistics - Get appointment statistics
-app.get('/api/appointments/statistics', authenticate, async (req, res) => {
-  try {
-    console.log('=== STATISTICS ENDPOINT HIT ===');
-    console.log('Headers received:', req.headers);
-    console.log('Authorization header:', req.headers.authorization);
-    console.log('User from authenticate middleware:', req.user);
-    
-    if (!req.user) {
-      console.log('NO USER OBJECT - AUTHENTICATION FAILED');
-      return res.status(401).json({ success: false, message: 'No token provided' });
-    }
-    
-    const userId = req.user._id;
-    const userEmail = req.user.email;
-    
-    console.log('Querying for user:', { userId, userEmail });
-    
-    const [
-      total,
-      confirmed,
-      pending,
-      completed,
-      cancelled,
-      upcomingCount,
-      activeReminders
-    ] = await Promise.all([
-      Appointment.countDocuments({ userId, userEmail, isActive: true }),
-      Appointment.countDocuments({ userId, userEmail, status: 'confirmed', isActive: true }),
-      Appointment.countDocuments({ userId, userEmail, status: 'pending', isActive: true }),
-      Appointment.countDocuments({ userId, userEmail, status: 'completed', isActive: true }),
-      Appointment.countDocuments({ userId, userEmail, status: 'cancelled', isActive: true }),
-      Appointment.countDocuments({ 
-        userId, 
-        userEmail,
-        date: { $gte: new Date() }, 
-        status: { $in: ['confirmed', 'pending'] },
-        isActive: true 
-      }),
-      Appointment.find({
-        userId,
-        userEmail,
-        reminderSet: true,
-        status: 'confirmed',
-        isActive: true,
-        date: { $gte: new Date() }
-      })
-    ]);
-    
-    const activeReminderCount = activeReminders.filter(apt => 
-      apt.shouldSendReminder()
-    ).length;
-    
-    console.log('Statistics calculated successfully');
-    
-    res.json({
-      success: true,
-      statistics: {
-        total,
-        confirmed,
-        pending,
-        completed,
-        cancelled,
-        upcoming: upcomingCount,
-        activeReminders: activeReminderCount
-      }
-    });
-  } catch (err) {
-    console.error('Get statistics error:', err);
-    res.status(500).json({ success: false, message: 'Server error' });
-  }
-});
 
 // GET /api/appointments/settings/reminders - Get reminder settings
 app.get('/api/appointments/settings/reminders', authenticate, async (req, res) => {
