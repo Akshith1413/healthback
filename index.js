@@ -1472,8 +1472,20 @@ app.get('/api/appointments/reminders/active', authenticate, async (req, res) => 
 // GET /api/appointments/statistics - Get appointment statistics
 app.get('/api/appointments/statistics', authenticate, async (req, res) => {
   try {
+    console.log('=== STATISTICS ENDPOINT HIT ===');
+    console.log('Headers received:', req.headers);
+    console.log('Authorization header:', req.headers.authorization);
+    console.log('User from authenticate middleware:', req.user);
+    
+    if (!req.user) {
+      console.log('NO USER OBJECT - AUTHENTICATION FAILED');
+      return res.status(401).json({ success: false, message: 'No token provided' });
+    }
+    
     const userId = req.user._id;
     const userEmail = req.user.email;
+    
+    console.log('Querying for user:', { userId, userEmail });
     
     const [
       total,
@@ -1509,6 +1521,8 @@ app.get('/api/appointments/statistics', authenticate, async (req, res) => {
     const activeReminderCount = activeReminders.filter(apt => 
       apt.shouldSendReminder()
     ).length;
+    
+    console.log('Statistics calculated successfully');
     
     res.json({
       success: true,
