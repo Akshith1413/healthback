@@ -1,8 +1,12 @@
 module.exports = (app, mongoose, authenticate) => {
-    const standardErrorResponse = (res, statusCode, message, details = null) => {
+
+   const { body, validationResult } = require('express-validator');
+    // 3. FIX: Standardized error response helper
+const standardErrorResponse = (res, statusCode, message, details = null) => {
   const response = {
     success: false,
     message: message,
+    timestamp: new Date().toISOString(),
     ...(details && process.env.NODE_ENV === 'development' && { details })
   };
   
@@ -48,11 +52,13 @@ const AppointmentStatisticsSchema = new mongoose.Schema({
     type: mongoose.Schema.Types.ObjectId,
     ref: 'User',
     required: true,
-    unique: true
+    unique: true,
+    index: true  // Remove the separate .index() call below
   },
   userEmail: {
     type: String,
-    required: true
+    required: true,
+    index: true  // Remove the separate .index() call below
   },
   total: { type: Number, default: 0 },
   confirmed: { type: Number, default: 0 },
@@ -66,12 +72,50 @@ const AppointmentStatisticsSchema = new mongoose.Schema({
   timestamps: true
 });
 
+
 const AppointmentStatistics = mongoose.model('AppointmentStatistics', AppointmentStatisticsSchema);
+let statisticsUpdateQueue = new Map();
+let updateTimer = null;
+
+const debouncedUpdateStatistics = (userId, userEmail) => {
+  const key = `${userId}_${userEmail}`;
+  statisticsUpdateQueue.set(key, { userId, userEmail });
+  
+  if (updateTimer) {
+    clearTimeout(updateTimer);
+  }
+  
+  updateTimer = setTimeout(async () => {
+    const updates = Array.from(statisticsUpdateQueue.values());
+    statisticsUpdateQueue.clear();
+    
+    await Promise.all(
+      updates.map(({ userId, userEmail }) => 
+        updateAppointmentStatistics(userId, userEmail)
+      )
+    );
+  }, 1000); // Batch updates every 1 second
+};
 
 // Add index for better performance
-AppointmentStatisticsSchema.index({ userId: 1 });
-AppointmentStatisticsSchema.index({ userEmail: 1 });
+// AppointmentStatisticsSchema.index({ userId: 1 });
+// AppointmentStatisticsSchema.index({ userEmail: 1 });
 // Function to update appointment statistics
+
+const validateAppointment = [
+  body('patientName').trim().isLength({ min: 2, max: 100 }).escape(),
+  body('phone').isMobilePhone('any', { strictMode: false }),
+  body('doctorName').trim().isLength({ min: 2, max: 100 }).escape(),
+  body('specialty').isIn([
+    'General Practice', 'Cardiology', 'Dermatology', 'Endocrinology',
+    'Gastroenterology', 'Neurology', 'Orthopedics', 'Pediatrics',
+    'Psychiatry', 'Radiology', 'Surgery', 'Urology'
+  ]),
+  body('date').isISO8601().toDate(),
+  body('time').matches(/^([0-1]?[0-9]|2[0-3]):[0-5][0-9]$/),
+  body('clinic').trim().isLength({ min: 2, max: 200 }).escape(),
+  body('agreeToTerms').equals('true').withMessage('You must agree to terms and conditions')
+];
 const updateAppointmentStatistics = async (userId, userEmail) => {
   try {
     console.log('Updating statistics for user:', userEmail);
@@ -201,7 +245,91 @@ RecipeSchema.pre('save', async function(next) {
 });
 
 const Recipe = mongoose.model('Recipe', RecipeSchema);
+const requestTimeout = (timeout = 30000) => {
+  return (req, res, next) => {
+    const timer = setTimeout(() => {
+      if (!res.headersSent) {
+        res.status(408).json({
+          success: false,
+          message: 'Request timeout'
+        });
+      }
+    }, timeout);
+    
+    res.on('finish', () => clearTimeout(timer));
+    next();
+  };
+};
+const requestLogger = (req, res, next) => {
+  const start = Date.now();
+  
+  res.on('finish', () => {
+    const duration = Date.now() - start;
+    const logLevel = res.statusCode >= 400 ? 'ERROR' : 'INFO';
+    
+    console.log(
+      `[${logLevel}] ${req.method} ${req.originalUrl} - ${res.statusCode} - ${duration}ms`
+    );
+    
+    if (res.statusCode >= 500) {
+      console.error(`Server error on ${req.method} ${req.originalUrl}:`, {
+        statusCode: res.statusCode,
+        duration,
+        userAgent: req.get('User-Agent'),
+        ip: req.ip
+      });
+    }
+  });
+  
+  next();
+};
+// 9. FIX: Improve error handling middleware
+app.use(requestTimeout(30000));
+app.use(requestLogger);
+app.use((err, req, res, next) => {
+  console.error('Unhandled error:', {
+    error: err.message,
+    stack: err.stack,
+    url: req.originalUrl,
+    method: req.method,
+    user: req.user?.email || 'anonymous'
+  });
 
+  if (res.headersSent) {
+    return next(err);
+  }
+
+  // Handle specific error types
+  if (err.name === 'ValidationError') {
+    return res.status(400).json({
+      success: false,
+      message: 'Validation error',
+      errors: Object.values(err.errors).map(e => e.message)
+    });
+  }
+  
+  if (err.name === 'MongoError' && err.code === 11000) {
+    return res.status(409).json({
+      success: false,
+      message: 'Duplicate entry detected'
+    });
+  }
+  
+  if (err.name === 'CastError') {
+    return res.status(400).json({
+      success: false,
+      message: 'Invalid ID format'
+    });
+  }
+
+  // Default error response
+  res.status(500).json({
+    success: false,
+    message: process.env.NODE_ENV === 'development' 
+      ? err.message 
+      : 'Internal server error'
+  });
+});
 // Meal Schema
 const MealSchema = new mongoose.Schema({
   userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
@@ -585,20 +713,22 @@ AppointmentSchema.methods.shouldSendReminder = function() {
 };
 AppointmentSchema.post('save', function(doc) {
   if (doc.userId && doc.userEmail) {
-    updateAppointmentStatistics(doc.userId, doc.userEmail);
+    debouncedUpdateStatistics(doc.userId, doc.userEmail);
   }
 });
+
 AppointmentSchema.post('findOneAndUpdate', function(doc) {
   if (doc && doc.userId && doc.userEmail) {
-    updateAppointmentStatistics(doc.userId, doc.userEmail);
+    debouncedUpdateStatistics(doc.userId, doc.userEmail);
   }
 });
 
 AppointmentSchema.post('findOneAndDelete', function(doc) {
   if (doc && doc.userId && doc.userEmail) {
-    updateAppointmentStatistics(doc.userId, doc.userEmail);
+    debouncedUpdateStatistics(doc.userId, doc.userEmail);
   }
 });
+
 const Appointment = mongoose.model('Appointment', AppointmentSchema);
 
 // Reminder Settings Schema
@@ -792,6 +922,12 @@ app.delete('/api/meals/:id', authenticate, async (req, res) => {
 app.post('/api/meals', authenticate, async (req, res) => {
   try {
     const mealData = req.body;
+    
+    // Validate required fields
+    if (!mealData.name || !mealData.type || !mealData.items || mealData.items.length === 0) {
+      return standardErrorResponse(res, 400, 'Name, type, and at least one food item are required');
+    }
+    
     console.log('Received meal data:', JSON.stringify(mealData, null, 2));
     
     // Process items - create FoodItem records for USDA foods
@@ -799,14 +935,14 @@ app.post('/api/meals', authenticate, async (req, res) => {
       if (item.fdcId) {
         // This is a USDA food item, create a FoodItem record first
         const foodItem = new FoodItem({
-          name: item.name,
+          name: item.name || 'Unknown Food',
           brand: item.brandOwner || item.brand || '',
           servingSize: `${item.servingSize || 100} ${item.servingSizeUnit || 'g'}`,
-          calories: item.calories || 0,
-          protein: item.protein || 0,
-          carbs: item.carbs || 0,
-          fat: item.fat || 0,
-          fiber: item.fiber || 0,
+          calories: Math.max(0, item.calories || 0),
+          protein: Math.max(0, item.protein || 0),
+          carbs: Math.max(0, item.carbs || 0),
+          fat: Math.max(0, item.fat || 0),
+          fiber: Math.max(0, item.fiber || 0),
           isCustom: true,
           createdBy: req.user._id
         });
@@ -816,61 +952,47 @@ app.post('/api/meals', authenticate, async (req, res) => {
         
         return {
           foodItem: foodItem._id,
-          quantity: item.quantity || 1,
+          quantity: Math.max(0.1, item.quantity || 1),
           unit: item.servingSizeUnit || 'g'
         };
       } else if (item.foodItem) {
         // Regular food item with foodItem ID
         return {
           foodItem: item.foodItem,
-          quantity: item.quantity || 1,
+          quantity: Math.max(0.1, item.quantity || 1),
           unit: item.unit || 'serving'
         };
       } else {
-        // Handle case where item might be malformed
         console.error('Invalid item structure:', item);
-        throw new Error('Invalid food item structure');
+        throw new Error(`Invalid food item structure for item: ${item.name || 'Unknown'}`);
       }
     }));
-    
-    console.log('Processed items:', processedItems);
     
     // Create the meal with processed items
     const meal = new Meal({
       userId: req.user._id,
-      name: mealData.name,
+      name: mealData.name.trim(),
       type: mealData.type,
       items: processedItems,
       date: convertToUTC(new Date(mealData.date)),
       time: mealData.time || new Date().toLocaleTimeString(),
-      notes: mealData.notes || ''
+      notes: mealData.notes?.trim() || ''
     });
     
-    // Save the meal first
+    // Save and populate
     await meal.save();
-    console.log('Meal saved with ID:', meal._id);
-    
-    // Populate the meal with food item details
     await meal.populate('items.foodItem');
-    console.log('Meal populated');
-    
-    // Calculate nutrition (this should trigger the pre-save hook)
-    await meal.save();
-    console.log('Nutrition calculated');
     
     // Return the fully populated meal
     const populatedMeal = await Meal.findById(meal._id)
       .populate('items.foodItem')
       .populate('items.recipe');
       
-    console.log('Returning meal:', populatedMeal.name);
     res.status(201).json(populatedMeal);
     
   } catch (error) {
     console.error('Error creating meal:', error);
-    console.error('Error stack:', error.stack);
     standardErrorResponse(res, 500, 'Failed to create meal', error.message);
-    
   }
 });
 // Water Intake Routes
@@ -1333,8 +1455,17 @@ app.get('/api/appointments/:id', authenticate, async (req, res) => {
 });
 
 // POST /api/appointments - Create new appointment
-app.post('/api/appointments', authenticate, async (req, res) => {
+app.post('/api/appointments', authenticate, validateAppointment, async (req, res) => {
   try {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json({ 
+        success: false, 
+        message: 'Validation error', 
+        errors: errors.array() 
+      });
+    }
+
     const appointmentData = {
       ...req.body,
       userId: req.user._id,
@@ -1345,11 +1476,14 @@ app.post('/api/appointments', authenticate, async (req, res) => {
     const appointmentDate = new Date(appointmentData.date);
     const today = new Date();
     today.setHours(0, 0, 0, 0);
-     if (appointmentData.date) {
-      appointmentData.date = convertToUTC(appointmentData.date);
-    }
+    
     if (appointmentDate < today) {
       return standardErrorResponse(res, 400, 'Appointment date cannot be in the past');
+    }
+    
+    // Convert to UTC properly
+    if (appointmentData.date) {
+      appointmentData.date = convertToUTC(appointmentData.date);
     }
     
     // Check for conflicting appointments
@@ -1363,22 +1497,24 @@ app.post('/api/appointments', authenticate, async (req, res) => {
     });
     
     if (conflictingAppointment) {
-      return res.status(400).json({ 
-        success: false,
-        message: 'You already have an appointment at this date and time' 
-      });
+      return standardErrorResponse(res, 409, 'You already have an appointment at this date and time');
     }
     
     const appointment = new Appointment(appointmentData);
     await appointment.save();
+    
+    // Use debounced statistics update
+    debouncedUpdateStatistics(req.user._id, req.user.email);
     
     res.status(201).json({
       success: true,
       message: 'Appointment scheduled successfully!',
       appointment
     });
+    
   } catch (err) {
     console.error('Create appointment error:', err);
+    
     if (err.name === 'ValidationError') {
       const errors = {};
       Object.keys(err.errors).forEach(key => {
@@ -1390,7 +1526,8 @@ app.post('/api/appointments', authenticate, async (req, res) => {
         errors 
       });
     }
-    res.status(500).json({ success: false, message: 'Server error' });
+    
+    standardErrorResponse(res, 500, 'Failed to create appointment', err.message);
   }
 });
 
