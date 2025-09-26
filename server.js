@@ -1795,7 +1795,7 @@ app.get('/supplements', authenticate, async (req, res) => {
 });
 
 // Get user's supplements
-app.get('/user-supplements', authenticate, async (req, res) => {
+app.get('/api/user-supplements', authenticate, async (req, res) => {
   try {
     const userSupplements = await UserSupplement.find({ userId: req.user.id })
       .populate('supplementId')
@@ -1808,7 +1808,7 @@ app.get('/user-supplements', authenticate, async (req, res) => {
 });
 
 // Add a supplement to user's regimen
-app.post('/user-supplements', authenticate, async (req, res) => {
+app.post('/api/user-supplements', authenticate, async (req, res) => {
   try {
     const {
       supplementId,
@@ -1861,7 +1861,7 @@ app.post('/user-supplements', authenticate, async (req, res) => {
 });
 
 // Update user supplement
-app.put('/user-supplements/:id', authenticate, async (req, res) => {
+app.put('/api/user-supplements/:id', authenticate, async (req, res) => {
   try {
     const userSupplement = await UserSupplement.findOne({
       _id: req.params.id,
@@ -1888,7 +1888,7 @@ app.put('/user-supplements/:id', authenticate, async (req, res) => {
 });
 
 // Delete user supplement
-app.delete('/user-supplements/:id', authenticate, async (req, res) => {
+app.delete('/api/user-supplements/:id', authenticate, async (req, res) => {
   try {
     const userSupplement = await UserSupplement.findOneAndDelete({
       _id: req.params.id,
