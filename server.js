@@ -1909,7 +1909,7 @@ app.delete('/api/user-supplements/:id', authenticate, async (req, res) => {
 });
 
 // Record supplement intake
-app.post('/intake', authenticate, async (req, res) => {
+app.post('/api/intake', authenticate, async (req, res) => {
   try {
     const { userSupplementId, takenAt, dosageTaken, wasTaken, skippedReason, notes } = req.body;
     
