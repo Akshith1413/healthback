@@ -2165,7 +2165,7 @@ const validateSupplement = [
   body('servingSize').isNumeric()
 ];
 // Add custom supplement to database
-app.post('/custom-supplement', authenticate, validateSupplement, async (req, res) => {
+app.post('/api/custom-supplement', authenticate, validateSupplement, async (req, res) => {
   try {
     const {
       name,
