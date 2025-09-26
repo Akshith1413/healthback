@@ -1907,7 +1907,33 @@ app.delete('/api/user-supplements/:id', authenticate, async (req, res) => {
     res.status(500).json({ message: error.message });
   }
 });
-
+// Get intake records (alternative to intake-history)
+app.get('/api/intake', authenticate, async (req, res) => {
+  try {
+    const { startDate, endDate, userSupplementId, limit = 100 } = req.query;
+    let query = { userId: req.user._id };
+    
+    if (startDate && endDate) {
+      query.takenAt = {
+        $gte: new Date(startDate),
+        $lte: new Date(endDate)
+      };
+    }
+    
+    if (userSupplementId) {
+      query.userSupplementId = userSupplementId;
+    }
+    
+    const intakeHistory = await SupplementIntake.find(query)
+      .populate('userSupplementId')
+      .sort({ takenAt: -1 })
+      .limit(parseInt(limit));
+    
+    res.json(intakeHistory);
+  } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
+});
 // Record supplement intake
 app.post('/api/intake', authenticate, async (req, res) => {
   try {
