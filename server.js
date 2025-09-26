@@ -1763,7 +1763,7 @@ app.get('/profile', authenticate, async (req, res) => {
     res.status(500).json({ message: 'Server error' });
   }
 });
-app.get('/supplements', authenticate, async (req, res) => {
+app.get('/api/supplements', authenticate, async (req, res) => {
   try {
     const { search, type, page = 1, limit = 20 } = req.query;
     let query = {};
