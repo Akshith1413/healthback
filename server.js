@@ -2162,7 +2162,7 @@ app.post('/health-metrics', authenticate, async (req, res) => {
   }
 });
 
-app.get('/health-metrics', authenticate, async (req, res) => {
+app.get('/api/health-metrics', authenticate, async (req, res) => {
   try {
     const { startDate, endDate, type } = req.query;
     let query = { userId: req.user._id };
