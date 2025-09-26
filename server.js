@@ -1992,15 +1992,14 @@ app.get('/api/intake-history', authenticate, async (req, res) => {
   }
 });
 
-// Get adherence reports
-app.get('/adherence-reports', authenticate, async (req, res) => {
+// Adherence reports endpoint (add this if not exists)
+app.get('/api/adherence-reports', authenticate, async (req, res) => {
   try {
     const { startDate, endDate } = req.query;
     const start = new Date(startDate || new Date().setDate(new Date().getDate() - 30));
     const end = new Date(endDate || new Date());
     
-    // Get all user supplements
-    const userSupplements = await UserSupplement.find({ userId: req.user.id });
+    const userSupplements = await UserSupplement.find({ userId: req.user._id });
     
     const reports = await Promise.all(userSupplements.map(async (supp) => {
       // Calculate expected intakes based on frequency
@@ -2008,7 +2007,7 @@ app.get('/adherence-reports', authenticate, async (req, res) => {
       
       // Get actual intakes
       const actualIntakes = await SupplementIntake.find({
-        userId: req.user.id,
+        userId: req.user._id,
         userSupplementId: supp._id,
         takenAt: { $gte: start, $lte: end },
         wasTaken: true
@@ -2034,12 +2033,14 @@ app.get('/adherence-reports', authenticate, async (req, res) => {
 });
 
 // Get cost tracking reports
-app.get('/cost-reports', authenticate, async (req, res) => {
+
+// Cost reports endpoint (add this if not exists)
+app.get('/api/cost-reports', authenticate, async (req, res) => {
   try {
-    const userSupplements = await UserSupplement.find({ userId: req.user.id })
+    const userSupplements = await UserSupplement.find({ userId: req.user._id })
       .populate('supplementId');
     
-    const reports = userSupplements.map(supp => {
+    const supplements = userSupplements.map(supp => {
       const supplementName = supp.customSupplement?.name || supp.supplementId?.name;
       const cost = supp.cost || {};
       const dailyCost = cost.price && cost.quantity && supp.dosage && supp.frequency
@@ -2057,12 +2058,12 @@ app.get('/cost-reports', authenticate, async (req, res) => {
       };
     });
     
-    const totalDailyCost = reports.reduce((sum, report) => sum + report.dailyCost, 0);
-    const totalMonthlyCost = reports.reduce((sum, report) => sum + report.monthlyCost, 0);
-    const totalYearlyCost = reports.reduce((sum, report) => sum + report.yearlyCost, 0);
+    const totalDailyCost = supplements.reduce((sum, report) => sum + report.dailyCost, 0);
+    const totalMonthlyCost = supplements.reduce((sum, report) => sum + report.monthlyCost, 0);
+    const totalYearlyCost = supplements.reduce((sum, report) => sum + report.yearlyCost, 0);
     
     res.json({
-      supplements: reports,
+      supplements: supplements,
       totals: {
         daily: totalDailyCost,
         monthly: totalMonthlyCost,
