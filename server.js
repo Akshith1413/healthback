@@ -1940,7 +1940,7 @@ app.post('/intake', authenticate, async (req, res) => {
 });
 
 // Get intake history
-app.get('/intake-history', authenticate, async (req, res) => {
+app.get('/api/intake-history', authenticate, async (req, res) => {
   try {
     const { startDate, endDate, userSupplementId } = req.query;
     let query = { userId: req.user.id };
@@ -2081,7 +2081,7 @@ app.get('/effectiveness', authenticate, async (req, res) => {
 });
 
 // Get interaction warnings
-app.get('/interactions', authenticate, async (req, res) => {
+app.get('/api/interactions', authenticate, async (req, res) => {
   try {
     const warnings = await InteractionWarning.find({
       userId: req.user.id,
@@ -2095,7 +2095,7 @@ app.get('/interactions', authenticate, async (req, res) => {
 });
 
 // Acknowledge interaction warning
-app.put('/interactions/:id/acknowledge', authenticate, async (req, res) => {
+app.put('/api/interactions/:id/acknowledge', authenticate, async (req, res) => {
   try {
     const warning = await InteractionWarning.findOneAndUpdate(
       { _id: req.params.id, userId: req.user.id },
