@@ -2140,7 +2140,7 @@ app.put('/api/interactions/:id/acknowledge', authenticate, async (req, res) => {
   }
 });
 // Add health metric routes
-app.post('/health-metrics', authenticate, async (req, res) => {
+app.post('/api/health-metrics', authenticate, async (req, res) => {
   try {
     const { type, customType, value, unit, notes, recordedAt } = req.body;
     
