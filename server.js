@@ -2162,6 +2162,7 @@ app.get('/effectiveness', authenticate, async (req, res) => {
 });
 
 // GET /api/intake-timeline - Get intake counts by date for analytics
+// GET /api/intake-timeline - Get intake counts by date for analytics
 app.get('/api/intake-timeline', authenticate, async (req, res) => {
   try {
     const { 
@@ -2169,13 +2170,14 @@ app.get('/api/intake-timeline', authenticate, async (req, res) => {
       email, 
       startDate, 
       endDate, 
-      days = 30 
+      days = 14  // Changed to 14 days for your analytics tab
     } = req.query;
     
-    // Determine target user
-    let targetUserId = req.user._id; // Default to authenticated user
+    console.log('Received request with params:', { userId, email, startDate, endDate, days });
     
-    // If userId or email is provided, find that user
+    // Determine target user
+    let targetUserId = req.user._id;
+    
     if (userId || email) {
       let targetUser;
       
@@ -2190,31 +2192,19 @@ app.get('/api/intake-timeline', authenticate, async (req, res) => {
       }
       
       targetUserId = targetUser._id;
-      
-      // Optional: Add permission check here if needed
-      // For example, only allow family members or the user themselves
-      // You can implement family/permission checking logic here
     }
     
-    // Calculate date range
-    let start, end;
+    // Calculate date range - LAST 14 DAYS
+    const end = new Date();
+    end.setHours(23, 59, 59, 999);
     
-    if (startDate && endDate) {
-      start = new Date(startDate);
-      end = new Date(endDate);
-    } else {
-      // Default to last N days
-      end = new Date();
-      end.setHours(23, 59, 59, 999); // End of today
-      
-      start = new Date();
-      start.setDate(start.getDate() - parseInt(days));
-      start.setHours(0, 0, 0, 0); // Start of the day N days ago
-    }
+    const start = new Date();
+    start.setDate(start.getDate() - parseInt(days));
+    start.setHours(0, 0, 0, 0);
     
-    console.log(`Fetching intake timeline for user ${targetUserId} from ${start.toISOString()} to ${end.toISOString()}`);
+    console.log(`Date range: ${start.toISOString()} to ${end.toISOString()}`);
     
-    // Aggregate intake data by date
+    // Aggregate intake data by date - FIXED AGGREGATION
     const intakeTimeline = await SupplementIntake.aggregate([
       {
         $match: {
@@ -2231,7 +2221,8 @@ app.get('/api/intake-timeline', authenticate, async (req, res) => {
           _id: {
             $dateToString: {
               format: "%Y-%m-%d",
-              date: "$takenAt"
+              date: "$takenAt",
+              timezone: "UTC"
             }
           },
           count: { $sum: 1 },
@@ -2258,26 +2249,33 @@ app.get('/api/intake-timeline', authenticate, async (req, res) => {
       }
     ]);
     
-    // Create a complete timeline with zero counts for missing dates
+    console.log('Raw aggregation result:', intakeTimeline);
+    
+    // Create complete timeline for last 14 days
     const completeTimeline = [];
     const currentDate = new Date(start);
     
-    // Create a map for quick lookup of existing data
+    // Create map for existing data
     const intakeMap = {};
     intakeTimeline.forEach(item => {
       intakeMap[item.date] = item;
     });
     
-    // Fill in the complete timeline
+    // Generate all dates in the range
     while (currentDate <= end) {
       const dateKey = currentDate.toISOString().split('T')[0];
       const existingData = intakeMap[dateKey];
+      
+      // Format for display (M/D)
+      const month = currentDate.getMonth() + 1;
+      const day = currentDate.getDate();
+      const displayDate = `${month}/${day}`;
       
       completeTimeline.push({
         date: dateKey,
         count: existingData ? existingData.count : 0,
         intakes: existingData ? existingData.intakes : [],
-        displayDate: `${currentDate.getMonth() + 1}/${currentDate.getDate()}`,
+        displayDate: displayDate,
         fullDate: currentDate.toLocaleDateString('en-US', { 
           weekday: 'short', 
           month: 'short', 
@@ -2288,36 +2286,16 @@ app.get('/api/intake-timeline', authenticate, async (req, res) => {
       currentDate.setDate(currentDate.getDate() + 1);
     }
     
-    // Calculate summary statistics
-    const totalIntakes = completeTimeline.reduce((sum, day) => sum + day.count, 0);
-    const daysWithIntakes = completeTimeline.filter(day => day.count > 0).length;
-    const averageIntakesPerDay = completeTimeline.length > 0 ? 
-      (totalIntakes / completeTimeline.length).toFixed(1) : 0;
-    
-    // Get user info for response
-    const userInfo = await User.findById(targetUserId).select('username email');
+    console.log('Complete timeline length:', completeTimeline.length);
     
     res.json({
       success: true,
-      user: {
-        id: targetUserId,
-        username: userInfo.username,
-        email: userInfo.email
-      },
+      timeline: completeTimeline,
       period: {
-        startDate: start.toISOString(),
-        endDate: end.toISOString(),
-        totalDays: completeTimeline.length
-      },
-      summary: {
-        totalIntakes,
-        daysWithIntakes,
-        daysWithoutIntakes: completeTimeline.length - daysWithIntakes,
-        averageIntakesPerDay: parseFloat(averageIntakesPerDay),
-        adherencePercentage: completeTimeline.length > 0 ? 
-          Math.round((daysWithIntakes / completeTimeline.length) * 100) : 0
-      },
-      timeline: completeTimeline
+        start: start.toISOString(),
+        end: end.toISOString(),
+        days: parseInt(days)
+      }
     });
     
   } catch (error) {
