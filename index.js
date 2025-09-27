@@ -44,170 +44,162 @@ const FoodItemSchema = new mongoose.Schema({
 const FoodItem = mongoose.model('FoodItem', FoodItemSchema);
 
 // Custom Recipe Schema
-const RecipeSchema = new mongoose.Schema({
-  name: { type: String, required: true },
-  description: { type: String },
-  ingredients: [{
-    foodItem: { type: mongoose.Schema.Types.ObjectId, ref: 'FoodItem' },
-    quantity: { type: Number, required: true },
-    unit: { type: String, required: true }
-  }],
-  servings: { type: Number, required: true },
-  instructions: [{ type: String }],
-  nutrition: {
-    calories: { type: Number },
-    protein: { type: Number },
-    carbs: { type: Number },
-    fat: { type: Number },
-    fiber: { type: Number }
-  },
-  createdBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
-  isPublic: { type: Boolean, default: false },
-  tags: [{ type: String }],
-  createdAt: { type: Date, default: Date.now },
-  updatedAt: { type: Date, default: Date.now }
-});
+// Recipe Schema
+    const RecipeSchema = new mongoose.Schema({
+        name: { type: String, required: true },
+        description: { type: String },
+        ingredients: [{
+            foodItem: { type: mongoose.Schema.Types.ObjectId, ref: 'FoodItem' },
+            quantity: { type: Number, required: true },
+            unit: { type: String, required: true }
+        }],
+        servings: { type: Number, required: true },
+        instructions: [{ type: String }],
+        nutrition: {
+            calories: { type: Number },
+            protein: { type: Number },
+            carbs: { type: Number },
+            fat: { type: Number },
+            fiber: { type: Number }
+        },
+        createdBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
+        isPublic: { type: Boolean, default: false },
+        tags: [{ type: String }],
+        createdAt: { type: Date, default: Date.now },
+        updatedAt: { type: Date, default: Date.now }
+    });
 
-RecipeSchema.pre('save', async function(next) {
-  this.updatedAt = Date.now();
-  
-  // Calculate nutrition from ingredients
-  if (this.ingredients.length > 0 && this.isModified('ingredients')) {
-    try {
-      // Populate ingredients if they're ObjectIds
-      let populatedIngredients = this.ingredients;
-      if (typeof this.ingredients[0].foodItem === 'object' && 
-          this.ingredients[0].foodItem._id) {
-        // Already populated
-      } else {
-        // Need to populate
-        const recipe = await this.populate('ingredients.foodItem').execPopulate();
-        populatedIngredients = recipe.ingredients;
-      }
-      
-      let totalCalories = 0;
-      let totalProtein = 0;
-      let totalCarbs = 0;
-      let totalFat = 0;
-      let totalFiber = 0;
-      
-      populatedIngredients.forEach(ingredient => {
-        if (ingredient.foodItem) {
-          totalCalories += (ingredient.foodItem.calories * ingredient.quantity);
-          totalProtein += (ingredient.foodItem.protein * ingredient.quantity);
-          totalCarbs += (ingredient.foodItem.carbs * ingredient.quantity);
-          totalFat += (ingredient.foodItem.fat * ingredient.quantity);
-          totalFiber += (ingredient.foodItem.fiber * ingredient.quantity);
-        }
-      });
-      
-      this.nutrition = {
-        calories: Math.round(totalCalories / this.servings),
-        protein: Math.round(totalProtein / this.servings),
-        carbs: Math.round(totalCarbs / this.servings),
-        fat: Math.round(totalFat / this.servings),
-        fiber: Math.round(totalFiber / this.servings)
-      };
-    } catch (error) {
-      console.error('Error calculating recipe nutrition:', error);
-      // Continue without nutrition data
-    }
-  }
-  
-  next();
-});
-
-const Recipe = mongoose.model('Recipe', RecipeSchema);
-
-// Meal Schema
-const MealSchema = new mongoose.Schema({
-  userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
-  name: { type: String, required: true },
-  type: { 
-    type: String, 
-    enum: ['breakfast', 'lunch', 'dinner', 'snack', 'other'],
-    required: true 
-  },
-  items: [{
-    foodItem: { type: mongoose.Schema.Types.ObjectId, ref: 'FoodItem' },
-    recipe: { type: mongoose.Schema.Types.ObjectId, ref: 'Recipe' },
-    quantity: { type: Number, required: true },
-    unit: { type: String, required: true }
-  }],
-  totalNutrition: {
-    calories: { type: Number },
-    protein: { type: Number },
-    carbs: { type: Number },
-    fat: { type: Number },
-    fiber: { type: Number }
-  },
-  date: { type: Date, required: true },
-  time: { type: String, required: true },
-  notes: { type: String },
-  createdAt: { type: Date, default: Date.now }
-});
-
-// In your server.js file, update the MealSchema pre-save hook
-// Also fix the Meal Schema pre-save hook
-MealSchema.pre('save', async function(next) {
-  try {
-    console.log('Pre-save hook triggered for meal:', this.name);
-    
-    // Calculate total nutrition from items
-    let totalCalories = 0;
-    let totalProtein = 0;
-    let totalCarbs = 0;
-    let totalFat = 0;
-    let totalFiber = 0;
-    
-    if (this.items && this.items.length > 0) {
-      // Check if items are populated
-      const firstItem = this.items[0];
-      if (firstItem.foodItem && typeof firstItem.foodItem === 'object' && firstItem.foodItem.calories !== undefined) {
-        // Items are already populated
-        this.items.forEach(item => {
-          if (item.foodItem) {
-            totalCalories += (item.foodItem.calories || 0) * (item.quantity || 1);
-            totalProtein += (item.foodItem.protein || 0) * (item.quantity || 1);
-            totalCarbs += (item.foodItem.carbs || 0) * (item.quantity || 1);
-            totalFat += (item.foodItem.fat || 0) * (item.quantity || 1);
-            totalFiber += (item.foodItem.fiber || 0) * (item.quantity || 1);
-          }
-        });
-      } else if (firstItem.foodItem) {
-        // Items need to be populated
-        try {
-          await this.populate('items.foodItem');
-          this.items.forEach(item => {
-            if (item.foodItem) {
-              totalCalories += (item.foodItem.calories || 0) * (item.quantity || 1);
-              totalProtein += (item.foodItem.protein || 0) * (item.quantity || 1);
-              totalCarbs += (item.foodItem.carbs || 0) * (item.quantity || 1);
-              totalFat += (item.foodItem.fat || 0) * (item.quantity || 1);
-              totalFiber += (item.foodItem.fiber || 0) * (item.quantity || 1);
+    RecipeSchema.pre('save', async function(next) {
+        this.updatedAt = Date.now();
+        
+        // Calculate nutrition from ingredients
+        if (this.ingredients.length > 0 && this.isModified('ingredients')) {
+            try {
+                let totalCalories = 0;
+                let totalProtein = 0;
+                let totalCarbs = 0;
+                let totalFat = 0;
+                let totalFiber = 0;
+                
+                // Populate ingredients if needed
+                if (this.ingredients[0].foodItem && typeof this.ingredients[0].foodItem === 'object') {
+                    // Already populated
+                    this.ingredients.forEach(ingredient => {
+                        if (ingredient.foodItem) {
+                            totalCalories += (ingredient.foodItem.calories * ingredient.quantity);
+                            totalProtein += (ingredient.foodItem.protein * ingredient.quantity);
+                            totalCarbs += (ingredient.foodItem.carbs * ingredient.quantity);
+                            totalFat += (ingredient.foodItem.fat * ingredient.quantity);
+                            totalFiber += (ingredient.foodItem.fiber * ingredient.quantity);
+                        }
+                    });
+                } else {
+                    // Need to populate
+                    await this.populate('ingredients.foodItem');
+                    this.ingredients.forEach(ingredient => {
+                        if (ingredient.foodItem) {
+                            totalCalories += (ingredient.foodItem.calories * ingredient.quantity);
+                            totalProtein += (ingredient.foodItem.protein * ingredient.quantity);
+                            totalCarbs += (ingredient.foodItem.carbs * ingredient.quantity);
+                            totalFat += (ingredient.foodItem.fat * ingredient.quantity);
+                            totalFiber += (ingredient.foodItem.fiber * ingredient.quantity);
+                        }
+                    });
+                }
+                
+                this.nutrition = {
+                    calories: Math.round(totalCalories / this.servings),
+                    protein: Math.round(totalProtein / this.servings),
+                    carbs: Math.round(totalCarbs / this.servings),
+                    fat: Math.round(totalFat / this.servings),
+                    fiber: Math.round(totalFiber / this.servings)
+                };
+            } catch (error) {
+                console.error('Error calculating recipe nutrition:', error);
             }
-          });
-        } catch (populateError) {
-          console.error('Error populating items in pre-save hook:', populateError);
         }
-      }
-    }
-    
-    this.totalNutrition = {
-      calories: Math.round(totalCalories),
-      protein: Math.round(totalProtein * 100) / 100,
-      carbs: Math.round(totalCarbs * 100) / 100,
-      fat: Math.round(totalFat * 100) / 100,
-      fiber: Math.round(totalFiber * 100) / 100
-    };
-    
-    console.log('Calculated nutrition:', this.totalNutrition);
-    next();
-  } catch (error) {
-    console.error('Error in meal pre-save hook:', error);
-    next(error);
-  }
-});
+        
+        next();
+    });
+const Recipe = mongoose.model('Recipe', RecipeSchema);
+// Meal Schema
+    const MealSchema = new mongoose.Schema({
+        userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
+        name: { type: String, required: true },
+        type: { 
+            type: String, 
+            enum: ['breakfast', 'lunch', 'dinner', 'snack', 'other'],
+            required: true 
+        },
+        items: [{
+            foodItem: { type: mongoose.Schema.Types.ObjectId, ref: 'FoodItem' },
+            recipe: { type: mongoose.Schema.Types.ObjectId, ref: 'Recipe' },
+            quantity: { type: Number, required: true },
+            unit: { type: String, required: true }
+        }],
+        totalNutrition: {
+            calories: { type: Number },
+            protein: { type: Number },
+            carbs: { type: Number },
+            fat: { type: Number },
+            fiber: { type: Number }
+        },
+        date: { type: Date, required: true },
+        time: { type: String, required: true },
+        notes: { type: String },
+        createdAt: { type: Date, default: Date.now }
+    });
+
+    MealSchema.pre('save', async function(next) {
+        try {
+            let totalCalories = 0;
+            let totalProtein = 0;
+            let totalCarbs = 0;
+            let totalFat = 0;
+            let totalFiber = 0;
+            
+            if (this.items && this.items.length > 0) {
+                // Populate food items if needed
+                if (this.items[0].foodItem && typeof this.items[0].foodItem === 'object') {
+                    // Already populated
+                    this.items.forEach(item => {
+                        if (item.foodItem) {
+                            totalCalories += (item.foodItem.calories || 0) * (item.quantity || 1);
+                            totalProtein += (item.foodItem.protein || 0) * (item.quantity || 1);
+                            totalCarbs += (item.foodItem.carbs || 0) * (item.quantity || 1);
+                            totalFat += (item.foodItem.fat || 0) * (item.quantity || 1);
+                            totalFiber += (item.foodItem.fiber || 0) * (item.quantity || 1);
+                        }
+                    });
+                } else {
+                    // Need to populate
+                    await this.populate('items.foodItem');
+                    this.items.forEach(item => {
+                        if (item.foodItem) {
+                            totalCalories += (item.foodItem.calories || 0) * (item.quantity || 1);
+                            totalProtein += (item.foodItem.protein || 0) * (item.quantity || 1);
+                            totalCarbs += (item.foodItem.carbs || 0) * (item.quantity || 1);
+                            totalFat += (item.foodItem.fat || 0) * (item.quantity || 1);
+                            totalFiber += (item.foodItem.fiber || 0) * (item.quantity || 1);
+                        }
+                    });
+                }
+            }
+            
+            this.totalNutrition = {
+                calories: Math.round(totalCalories),
+                protein: Math.round(totalProtein * 100) / 100,
+                carbs: Math.round(totalCarbs * 100) / 100,
+                fat: Math.round(totalFat * 100) / 100,
+                fiber: Math.round(totalFiber * 100) / 100
+            };
+            
+            next();
+        } catch (error) {
+            console.error('Error in meal pre-save hook:', error);
+            next(error);
+        }
+    });
 const Meal = mongoose.model('Meal', MealSchema);
 
 // Water Intake Schema
@@ -222,24 +214,23 @@ const WaterIntakeSchema = new mongoose.Schema({
 const WaterIntake = mongoose.model('WaterIntake', WaterIntakeSchema);
 
 // Nutritional Goals Schema
-const NutritionalGoalsSchema = new mongoose.Schema({
-  userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true, unique: true },
-  dailyCalories: { type: Number, required: true },
-  protein: { type: Number, required: true }, // in grams
-  carbs: { type: Number, required: true }, // in grams
-  fat: { type: Number, required: true }, // in grams
-  fiber: { type: Number, default: 25 }, // in grams
-  water: { type: Number, default: 2000 }, // in ml
-  mealFrequency: { type: Number, default: 3 }, // meals per day
-  dietaryRestrictions: [{ type: String }],
-  createdAt: { type: Date, default: Date.now },
-  updatedAt: { type: Date, default: Date.now }
-});
+    const NutritionalGoalsSchema = new mongoose.Schema({
+        userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true, unique: true },
+        dailyCalories: { type: Number, default: 2000 },
+        protein: { type: Number, default: 150 }, // in grams
+        carbs: { type: Number, default: 250 },   // in grams
+        fat: { type: Number, default: 67 },      // in grams
+        fiber: { type: Number, default: 25 },    // in grams
+        water: { type: Number, default: 2000 },  // in ml
+        createdAt: { type: Date, default: Date.now },
+        updatedAt: { type: Date, default: Date.now }
+    });
 
-NutritionalGoalsSchema.pre('save', function(next) {
-  this.updatedAt = Date.now();
-  next();
-});
+    NutritionalGoalsSchema.pre('save', function(next) {
+        this.updatedAt = Date.now();
+        next();
+    });
+
 
 const NutritionalGoals = mongoose.model('NutritionalGoals', NutritionalGoalsSchema);
 
@@ -995,574 +986,520 @@ const convertToUTC = (date) => {
 
 // Food Items Routes
 app.get('/api/food-items', authenticate, async (req, res) => {
-  try {
-    const { search, page = 1, limit = 20 } = req.query;
-    let query = { $or: [{ isCustom: false }, { createdBy: req.user._id }] };
-    
-    if (search) {
-      query.name = { $regex: search, $options: 'i' };
-    }
-    
-    const foodItems = await FoodItem.find(query)
-      .limit(limit * 1)
-      .skip((page - 1) * limit);
-    
-    res.json(foodItems);
-  } catch (error) {
-    console.error('Get food items error:', error);
-    standardErrorResponse(res, 500, 'Failed to retrieve food items', error.message);
-  }
-});
-app.get('/api/food-items/:id', authenticate, async (req, res) => {
-  try {
-    const foodItem = await FoodItem.findById(req.params.id);
-    if (!foodItem) {
-      return standardErrorResponse(res, 404, 'Food item not found');
-    }
-    res.json(foodItem);
-  } catch (error) {
-    console.error('Get food item error:', error);
-    standardErrorResponse(res, 500, 'Failed to retrieve food item', error.message);
-  }
-});
-app.post('/api/food-items', authenticate, async (req, res) => {
-  try {
-    const foodItem = new FoodItem({
-      ...req.body,
-      isCustom: true,
-      createdBy: req.user._id
+        try {
+            const { search, page = 1, limit = 20 } = req.query;
+            let query = { $or: [{ isCustom: false }, { createdBy: req.user._id }] };
+            
+            if (search) {
+                query.name = { $regex: search, $options: 'i' };
+            }
+            
+            const foodItems = await FoodItem.find(query)
+                .limit(limit * 1)
+                .skip((page - 1) * limit);
+            
+            res.json({
+                success: true,
+                data: foodItems,
+                page: parseInt(page),
+                limit: parseInt(limit)
+            });
+        } catch (error) {
+            console.error('Get food items error:', error);
+            standardErrorResponse(res, 500, 'Failed to retrieve food items', error.message);
+        }
     });
-    
-    await foodItem.save();
-    res.status(201).json(foodItem);
-  } catch (error) {
-    console.error('Get food item error:', error);
-    standardErrorResponse(res, 500, 'Failed to retrieve food item', error.message);
-  }
-});
+app.get('/api/food-items/:id', authenticate, async (req, res) => {
+        try {
+            const foodItem = await FoodItem.findById(req.params.id);
+            if (!foodItem) {
+                return standardErrorResponse(res, 404, 'Food item not found');
+            }
+            res.json({
+                success: true,
+                data: foodItem
+            });
+        } catch (error) {
+            console.error('Get food item error:', error);
+            standardErrorResponse(res, 500, 'Failed to retrieve food item', error.message);
+        }
+    });
+
+ app.post('/api/food-items', authenticate, async (req, res) => {
+        try {
+            const foodItem = new FoodItem({
+                ...req.body,
+                isCustom: true,
+                createdBy: req.user._id
+            });
+            
+            await foodItem.save();
+            res.status(201).json({
+                success: true,
+                message: 'Food item created successfully',
+                data: foodItem
+            });
+        } catch (error) {
+            console.error('Create food item error:', error);
+            standardErrorResponse(res, 500, 'Failed to create food item', error.message);
+        }
+    });
 
 // Recipe Routes
 app.get('/api/recipes', authenticate, async (req, res) => {
-  try {
-    const recipes = await Recipe.find({
-      $or: [{ createdBy: req.user._id }, { isPublic: true }]
-    }).populate('ingredients.foodItem');
-    
-    res.json(recipes);
-  } catch (error) {
-    console.error('Get recipes error:', error);
-    standardErrorResponse(res, 500, 'Failed to retrieve food item', error.message);
-  }
-});
-
-app.post('/api/recipes', authenticate, async (req, res) => {
-  try {
-    const recipe = new Recipe({
-      ...req.body,
-      createdBy: req.user._id
-    });
-    
-    await recipe.save();
-    await recipe.populate('ingredients.foodItem');
-    res.status(201).json(recipe);
-  } catch (error) {
-    console.error('Create recipe error:', error);
-    standardErrorResponse(res, 500, 'Failed to create recipe', error.message); // FIXED
-  }
-});
-
-// Meal Routes
-app.get('/api/meals', authenticate, async (req, res) => {
-  try {
-    const { date } = req.query;
-    let query = { userId: req.user._id };
-    
-    if (date) {
-      query.date = new Date(date);
-    }
-    
-    const meals = await Meal.find(query)
-      .populate('items.foodItem')
-      .populate('items.recipe');
-    
-    res.json(meals);
-  } catch (error) {
-    standardErrorResponse(res, 500, 'Failed to retrieve meals', error.message);
-  }
-});
-// Delete a meal
-app.delete('/api/meals/:id', authenticate, async (req, res) => {
-  try {
-    const meal = await Meal.findById(req.params.id);
-    if (!meal) {
-      return standardErrorResponse(res, 404, 'Meal not found');
-    }
-    
-    // Check if the meal belongs to the user
-    if (meal.userId.toString() !== req.user._id.toString()) {
-      return standardErrorResponse(res, 403, 'Not authorized'); 
-    }
-    
-    await Meal.findByIdAndDelete(req.params.id);
-    res.json({ message: 'Meal deleted successfully' });
-  } catch (error) {
-    console.error('Delete meal error:', error);
-    standardErrorResponse(res, 500, 'Failed to delete meal', error.message);
-  }
-});
-// Fixed Meal creation route in your server file
-app.post('/api/meals', authenticate, async (req, res) => {
-  try {
-    const mealData = req.body;
-    console.log('Received meal data:', JSON.stringify(mealData, null, 2));
-    
-    // Process items - create FoodItem records for USDA foods
-    const processedItems = await Promise.all(mealData.items.map(async (item) => {
-      if (item.fdcId) {
-        // This is a USDA food item, create a FoodItem record first
-        const foodItem = new FoodItem({
-          name: item.name,
-          brand: item.brandOwner || item.brand || '',
-          servingSize: `${item.servingSize || 100} ${item.servingSizeUnit || 'g'}`,
-          calories: item.calories || 0,
-          protein: item.protein || 0,
-          carbs: item.carbs || 0,
-          fat: item.fat || 0,
-          fiber: item.fiber || 0,
-          isCustom: true,
-          createdBy: req.user._id
-        });
-        
-        await foodItem.save();
-        console.log('Created USDA food item:', foodItem.name);
-        
-        return {
-          foodItem: foodItem._id,
-          quantity: item.quantity || 1,
-          unit: item.servingSizeUnit || 'g'
-        };
-      } else if (item.foodItem) {
-        // Regular food item with foodItem ID
-        return {
-          foodItem: item.foodItem,
-          quantity: item.quantity || 1,
-          unit: item.unit || 'serving'
-        };
-      } else {
-        // Handle case where item might be malformed
-        console.error('Invalid item structure:', item);
-        throw new Error('Invalid food item structure');
-      }
-    }));
-    
-    console.log('Processed items:', processedItems);
-    
-    // Create the meal with processed items
-    const meal = new Meal({
-      userId: req.user._id,
-      name: mealData.name,
-      type: mealData.type,
-      items: processedItems,
-      date: convertToUTC(new Date(mealData.date)),
-      time: mealData.time || new Date().toLocaleTimeString(),
-      notes: mealData.notes || ''
-    });
-    
-    // Save the meal first
-    await meal.save();
-    console.log('Meal saved with ID:', meal._id);
-    
-    // Populate the meal with food item details
-    await meal.populate('items.foodItem');
-    console.log('Meal populated');
-    
-    // Calculate nutrition (this should trigger the pre-save hook)
-    await meal.save();
-    console.log('Nutrition calculated');
-    
-    // Return the fully populated meal
-    const populatedMeal = await Meal.findById(meal._id)
-      .populate('items.foodItem')
-      .populate('items.recipe');
-      
-    console.log('Returning meal:', populatedMeal.name);
-    res.status(201).json(populatedMeal);
-    
-  } catch (error) {
-    console.error('Error creating meal:', error);
-    console.error('Error stack:', error.stack);
-    standardErrorResponse(res, 500, 'Failed to create meal', error.message);
-    
-  }
-});
-// Water Intake Routes
-app.get('/api/water-intake', authenticate, async (req, res) => {
-  try {
-    const { date } = req.query;
-    let query = { userId: req.user._id };
-    
-    if (date) {
-      query.date = new Date(date);
-    }
-    
-    const waterIntakes = await WaterIntake.find(query);
-    const total = waterIntakes.reduce((sum, intake) => sum + intake.amount, 0);
-    
-    res.json({ entries: waterIntakes, total });
-  }  catch (error) {
-    console.error('Get water intake error:', error);
-    standardErrorResponse(res, 500, 'Failed to retrieve water intake data', error.message);
-  }
-});
-
-app.post('/api/water-intake', authenticate, async (req, res) => {
-  try {
-    const waterIntake = new WaterIntake({
-      ...req.body,
-      userId: req.user._id
-    });
-    
-    await waterIntake.save();
-    res.status(201).json(waterIntake);
-  } catch (error) {
-    console.error('Create water intake error:', error);
-    standardErrorResponse(res, 500, 'Failed to create water intake entry', error.message);
-  }
-});
-
-app.get('/api/nutritional-goals', authenticate, async (req, res) => {
-  try {
-    // Get HealthProfile model from mongoose (it should be available since it's defined in server.js)
-    const HealthProfile = mongoose.model('HealthProfile');
-    const NutritionalGoals = mongoose.model('NutritionalGoals');
-    
-    let goals = await NutritionalGoals.findOne({ userId: req.user._id });
-    
-    if (!goals) {
-      // Create default goals based on user profile or use fallback defaults
-      const healthProfile = await HealthProfile.findOne({ userId: req.user._id });
-      
-      if (healthProfile && healthProfile.weight && healthProfile.height && healthProfile.age && healthProfile.gender) {
         try {
-          // Calculate goals based on health profile
-          const bmr = healthProfile.gender === 'Male' 
-            ? 88.362 + (13.397 * healthProfile.weight) + (4.799 * healthProfile.height) - (5.677 * healthProfile.age)
-            : 447.593 + (9.247 * healthProfile.weight) + (3.098 * healthProfile.height) - (4.330 * healthProfile.age);
-          
-          const activityMultipliers = {
-            'Sedentary': 1.2,
-            'Lightly Active': 1.375,
-            'Moderately Active': 1.55,
-            'Very Active': 1.725,
-            'Extremely Active': 1.9
-          };
-          
-          const tdee = bmr * (activityMultipliers[healthProfile.activityLevel] || 1.2);
-          
-          goals = new NutritionalGoals({
-            userId: req.user._id,
-            dailyCalories: Math.round(tdee),
-            protein: Math.round((tdee * 0.3) / 4), // 30% of calories from protein
-            carbs: Math.round((tdee * 0.5) / 4),   // 50% of calories from carbs
-            fat: Math.round((tdee * 0.2) / 9),     // 20% of calories from fat
-            fiber: 25, // Default fiber goal
-            water: 2000 // Default water goal in ml
-          });
-        } catch (calcError) {
-          console.error('Error calculating goals from health profile:', calcError);
-          // Fallback to defaults if calculation fails
-          goals = new NutritionalGoals({
-            userId: req.user._id,
-            dailyCalories: 2000,
-            protein: 150,
-            carbs: 250,
-            fat: 67,
-            fiber: 25,
-            water: 2000
-          });
+            const recipes = await Recipe.find({
+                $or: [{ createdBy: req.user._id }, { isPublic: true }]
+            }).populate('ingredients.foodItem');
+            
+            res.json({
+                success: true,
+                data: recipes
+            });
+        } catch (error) {
+            console.error('Get recipes error:', error);
+            standardErrorResponse(res, 500, 'Failed to retrieve recipes', error.message);
         }
-      } else {
-        // Use fallback defaults if no health profile or incomplete data
-        console.log('No health profile found or incomplete data, using default goals for user:', req.user._id);
-        goals = new NutritionalGoals({
-          userId: req.user._id,
-          dailyCalories: 2000,
-          protein: 150,
-          carbs: 250,
-          fat: 67,
-          fiber: 25,
-          water: 2000
-        });
-      }
-      
-      await goals.save();
-      console.log('Created new nutritional goals for user:', req.user._id);
-    }
-    
-    // Ensure all required fields are present
-    const goalsData = goals.toObject ? goals.toObject() : goals;
-    
-    // Add missing fields with defaults if necessary
-    const completeGoals = {
-      dailyCalories: goalsData.dailyCalories || 2000,
-      protein: goalsData.protein || 150,
-      carbs: goalsData.carbs || 250,
-      fat: goalsData.fat || 67,
-      fiber: goalsData.fiber || 25,
-      water: goalsData.water || 2000,
-      ...goalsData
-    };
-    
-    res.json(completeGoals);
-  } catch (error) {
-    console.error('Get nutritional goals error:', error);
-    
-    // Return default goals instead of error for client-side fallback
-    res.json({
-      dailyCalories: 2000,
-      protein: 150,
-      carbs: 250,
-      fat: 67,
-      fiber: 25,
-      water: 2000,
-      fromDefaults: true,
-      message: 'Using default nutritional goals due to server error'
     });
-  }
-});
 
+    app.post('/api/recipes', authenticate, async (req, res) => {
+        try {
+            const recipe = new Recipe({
+                ...req.body,
+                createdBy: req.user._id
+            });
+            
+            await recipe.save();
+            await recipe.populate('ingredients.foodItem');
+            
+            res.status(201).json({
+                success: true,
+                message: 'Recipe created successfully',
+                data: recipe
+            });
+        } catch (error) {
+            console.error('Create recipe error:', error);
+            standardErrorResponse(res, 500, 'Failed to create recipe', error.message);
+        }
+    });
+
+// Meal Routes - FIXED
+    app.get('/api/meals', authenticate, async (req, res) => {
+        try {
+            const { date } = req.query;
+            let query = { userId: req.user._id };
+            
+            if (date) {
+                const targetDate = new Date(date);
+                const startOfDay = new Date(targetDate);
+                startOfDay.setHours(0, 0, 0, 0);
+                
+                const endOfDay = new Date(targetDate);
+                endOfDay.setHours(23, 59, 59, 999);
+                
+                query.date = { $gte: startOfDay, $lte: endOfDay };
+            }
+            
+            const meals = await Meal.find(query)
+                .populate('items.foodItem')
+                .populate('items.recipe')
+                .sort({ time: 1 });
+            
+            res.json({
+                success: true,
+                data: meals
+            });
+        } catch (error) {
+            console.error('Get meals error:', error);
+            standardErrorResponse(res, 500, 'Failed to retrieve meals', error.message);
+        }
+    });
+
+    app.post('/api/meals', authenticate, async (req, res) => {
+        try {
+            const mealData = req.body;
+            
+            // Process items - create FoodItem records for USDA foods
+            const processedItems = await Promise.all(mealData.items.map(async (item) => {
+                if (item.fdcId) {
+                    // This is a USDA food item, create a FoodItem record first
+                    const foodItem = new FoodItem({
+                        name: item.name,
+                        brand: item.brandOwner || item.brand || '',
+                        servingSize: `${item.servingSize || 100} ${item.servingSizeUnit || 'g'}`,
+                        calories: item.calories || 0,
+                        protein: item.protein || 0,
+                        carbs: item.carbs || 0,
+                        fat: item.fat || 0,
+                        fiber: item.fiber || 0,
+                        isCustom: true,
+                        createdBy: req.user._id
+                    });
+                    
+                    await foodItem.save();
+                    
+                    return {
+                        foodItem: foodItem._id,
+                        quantity: item.quantity || 1,
+                        unit: item.servingSizeUnit || 'g'
+                    };
+                } else if (item.foodItem) {
+                    // Regular food item with foodItem ID
+                    return {
+                        foodItem: item.foodItem,
+                        quantity: item.quantity || 1,
+                        unit: item.unit || 'serving'
+                    };
+                } else {
+                    throw new Error('Invalid food item structure');
+                }
+            }));
+            
+            // Create the meal with processed items
+            const meal = new Meal({
+                userId: req.user._id,
+                name: mealData.name,
+                type: mealData.type,
+                items: processedItems,
+                date: new Date(mealData.date),
+                time: mealData.time || new Date().toLocaleTimeString(),
+                notes: mealData.notes || ''
+            });
+            
+            await meal.save();
+            
+            // Populate and return the meal
+            const populatedMeal = await Meal.findById(meal._id)
+                .populate('items.foodItem')
+                .populate('items.recipe');
+                
+            res.status(201).json({
+                success: true,
+                message: 'Meal created successfully',
+                data: populatedMeal
+            });
+            
+        } catch (error) {
+            console.error('Error creating meal:', error);
+            standardErrorResponse(res, 500, 'Failed to create meal', error.message);
+        }
+    });
+
+    app.delete('/api/meals/:id', authenticate, async (req, res) => {
+        try {
+            const meal = await Meal.findById(req.params.id);
+            if (!meal) {
+                return standardErrorResponse(res, 404, 'Meal not found');
+            }
+            
+            if (meal.userId.toString() !== req.user._id.toString()) {
+                return standardErrorResponse(res, 403, 'Not authorized'); 
+            }
+            
+            await Meal.findByIdAndDelete(req.params.id);
+            res.json({
+                success: true,
+                message: 'Meal deleted successfully'
+            });
+        } catch (error) {
+            console.error('Delete meal error:', error);
+            standardErrorResponse(res, 500, 'Failed to delete meal', error.message);
+        }
+    });
+ // Water Intake Routes
+    app.get('/api/water-intake', authenticate, async (req, res) => {
+        try {
+            const { date } = req.query;
+            let query = { userId: req.user._id };
+            
+            if (date) {
+                const targetDate = new Date(date);
+                const startOfDay = new Date(targetDate);
+                startOfDay.setHours(0, 0, 0, 0);
+                
+                const endOfDay = new Date(targetDate);
+                endOfDay.setHours(23, 59, 59, 999);
+                
+                query.date = { $gte: startOfDay, $lte: endOfDay };
+            }
+            
+            const waterIntakes = await WaterIntake.find(query);
+            const total = waterIntakes.reduce((sum, intake) => sum + intake.amount, 0);
+            
+            res.json({
+                success: true,
+                data: {
+                    entries: waterIntakes,
+                    total: total
+                }
+            });
+        } catch (error) {
+            console.error('Get water intake error:', error);
+            standardErrorResponse(res, 500, 'Failed to retrieve water intake data', error.message);
+        }
+    });
+
+    app.post('/api/water-intake', authenticate, async (req, res) => {
+        try {
+            const waterIntake = new WaterIntake({
+                ...req.body,
+                userId: req.user._id
+            });
+            
+            await waterIntake.save();
+            res.status(201).json({
+                success: true,
+                message: 'Water intake recorded successfully',
+                data: waterIntake
+            });
+        } catch (error) {
+            console.error('Create water intake error:', error);
+            standardErrorResponse(res, 500, 'Failed to create water intake entry', error.message);
+        }
+    });
+
+
+// Nutritional Goals Routes - FIXED
+    app.get('/api/nutritional-goals', authenticate, async (req, res) => {
+        try {
+            let goals = await NutritionalGoals.findOne({ userId: req.user._id });
+            
+            if (!goals) {
+                // Create default goals
+                goals = new NutritionalGoals({
+                    userId: req.user._id,
+                    dailyCalories: 2000,
+                    protein: 150,
+                    carbs: 250,
+                    fat: 67,
+                    fiber: 25,
+                    water: 2000
+                });
+                
+                await goals.save();
+            }
+            
+            res.json({
+                success: true,
+                data: goals
+            });
+        } catch (error) {
+            console.error('Get nutritional goals error:', error);
+            // Return default goals instead of error
+            res.json({
+                success: false,
+                message: 'Using default nutritional goals',
+                data: {
+                    dailyCalories: 2000,
+                    protein: 150,
+                    carbs: 250,
+                    fat: 67,
+                    fiber: 25,
+                    water: 2000,
+                    fromDefaults: true
+                }
+            });
+        }
+    });
 app.put('/api/nutritional-goals', authenticate, async (req, res) => {
-  try {
-    const NutritionalGoals = mongoose.model('NutritionalGoals');
-    
-    let goals = await NutritionalGoals.findOne({ userId: req.user._id });
-    
-    if (goals) {
-      goals.set(req.body);
-      await goals.save();
-    } else {
-      goals = new NutritionalGoals({
-        ...req.body,
-        userId: req.user._id
-      });
-      await goals.save();
-    }
-    
-    res.json(goals);
-  } catch (error) {
-    console.error('Update nutritional goals error:', error);
-    res.status(500).json({ 
-      success: false,
-      message: 'Failed to update nutritional goals',
-      error: error.message 
-    });
-  }
-});
-
-app.post('/api/nutritional-goals', authenticate, async (req, res) => {
-  try {
-    const NutritionalGoals = mongoose.model('NutritionalGoals');
-    
-    // Check if goals already exist
-    const existingGoals = await NutritionalGoals.findOne({ userId: req.user._id });
-    if (existingGoals) {
-      return res.status(400).json({
-        success: false,
-        message: 'Nutritional goals already exist for this user. Use PUT to update.'
-      });
-    }
-    
-    const goals = new NutritionalGoals({
-      ...req.body,
-      userId: req.user._id
-    });
-    
-    await goals.save();
-    
-    res.status(201).json({
-      success: true,
-      message: 'Nutritional goals created successfully',
-      data: goals
-    });
-  } catch (error) {
-    console.error('Create nutritional goals error:', error);
-    res.status(500).json({ 
-      success: false,
-      message: 'Failed to create nutritional goals',
-      error: error.message 
-    });
-  }
-});
-
-// Reports and Analytics Routes
-app.get('/api/reports/daily', authenticate, async (req, res) => {
-  try {
-    const Meal = mongoose.model('Meal');
-    const WaterIntake = mongoose.model('WaterIntake');
-    const NutritionalGoals = mongoose.model('NutritionalGoals');
-    
-    const { date } = req.query;
-    const targetDate = date ? new Date(date) : new Date();
-    
-    // Create proper date range
-    const startOfDay = new Date(targetDate);
-    startOfDay.setHours(0, 0, 0, 0);
-    
-    const endOfDay = new Date(targetDate);
-    endOfDay.setHours(23, 59, 59, 999);
-    
-    // Get meals for the day
-    const meals = await Meal.find({
-      userId: req.user._id,
-      date: { $gte: startOfDay, $lte: endOfDay }
-    }).populate('items.foodItem').populate('items.recipe');
-    
-    // Get water intake for the day
-    const waterIntakes = await WaterIntake.find({
-      userId: req.user._id,
-      date: { $gte: startOfDay, $lte: endOfDay }
-    });
-    
-    // Calculate totals with safe defaults
-    const totalNutrition = meals.reduce((acc, meal) => ({
-      calories: acc.calories + (meal.totalNutrition?.calories || 0),
-      protein: acc.protein + (meal.totalNutrition?.protein || 0),
-      carbs: acc.carbs + (meal.totalNutrition?.carbs || 0),
-      fat: acc.fat + (meal.totalNutrition?.fat || 0),
-      fiber: acc.fiber + (meal.totalNutrition?.fiber || 0)
-    }), { calories: 0, protein: 0, carbs: 0, fat: 0, fiber: 0 });
-    
-    const totalWater = waterIntakes.reduce((sum, intake) => sum + (intake.amount || 0), 0);
-    
-    // Get goals with fallback
-    let goals = await NutritionalGoals.findOne({ userId: req.user._id });
-    if (!goals) {
-      goals = {
-        dailyCalories: 2000,
-        protein: 150,
-        carbs: 250,
-        fat: 67,
-        fiber: 25,
-        water: 2000
-      };
-    }
-    
-    res.json({
-      success: true,
-      date: targetDate.toISOString().split('T')[0],
-      meals: meals || [],
-      waterIntakes: waterIntakes || [],
-      totalNutrition,
-      totalWater,
-      goals
-    });
-  } catch (error) {
-    console.error('Daily report error:', error);
-    res.status(500).json({ 
-      success: false,
-      message: 'Failed to generate daily report',
-      error: error.message 
-    });
-  }
-});
-
-app.get('/api/reports/weekly', authenticate, async (req, res) => {
-  try {
-    const Meal = mongoose.model('Meal');
-    const WaterIntake = mongoose.model('WaterIntake');
-    const NutritionalGoals = mongoose.model('NutritionalGoals');
-    
-    const { startDate } = req.query;
-    const start = startDate ? new Date(startDate) : new Date();
-    start.setHours(0, 0, 0, 0);
-    
-    const end = new Date(start);
-    end.setDate(start.getDate() + 6);
-    end.setHours(23, 59, 59, 999);
-    
-    // Get meals for the week
-    const meals = await Meal.find({
-      userId: req.user._id,
-      date: { $gte: start, $lte: end }
-    }).populate('items.foodItem').populate('items.recipe');
-    
-    // Get water intake for the week
-    const waterIntakes = await WaterIntake.find({
-      userId: req.user._id,
-      date: { $gte: start, $lte: end }
-    });
-    
-    // Group by date with proper initialization
-    const dailyData = {};
-    for (let i = 0; i < 7; i++) {
-      const currentDate = new Date(start);
-      currentDate.setDate(start.getDate() + i);
-      const dateStr = currentDate.toISOString().split('T')[0];
-      
-      dailyData[dateStr] = {
-        date: dateStr,
-        meals: [],
-        totalNutrition: { calories: 0, protein: 0, carbs: 0, fat: 0, fiber: 0 },
-        totalWater: 0
-      };
-    }
-    
-    // Process meals with safe property access
-    meals.forEach(meal => {
-      if (meal && meal.date) {
-        const dateStr = meal.date.toISOString().split('T')[0];
-        if (dailyData[dateStr]) {
-          dailyData[dateStr].meals.push(meal);
-          const nutrition = meal.totalNutrition || {};
-          dailyData[dateStr].totalNutrition.calories += nutrition.calories || 0;
-          dailyData[dateStr].totalNutrition.protein += nutrition.protein || 0;
-          dailyData[dateStr].totalNutrition.carbs += nutrition.carbs || 0;
-          dailyData[dateStr].totalNutrition.fat += nutrition.fat || 0;
-          dailyData[dateStr].totalNutrition.fiber += nutrition.fiber || 0;
+        try {
+            let goals = await NutritionalGoals.findOne({ userId: req.user._id });
+            
+            if (goals) {
+                goals.set(req.body);
+                await goals.save();
+            } else {
+                goals = new NutritionalGoals({
+                    ...req.body,
+                    userId: req.user._id
+                });
+                await goals.save();
+            }
+            
+            res.json({
+                success: true,
+                message: 'Nutritional goals updated successfully',
+                data: goals
+            });
+        } catch (error) {
+            console.error('Update nutritional goals error:', error);
+            standardErrorResponse(res, 500, 'Failed to update nutritional goals', error.message);
         }
-      }
     });
-    
-    // Process water intakes
-    waterIntakes.forEach(intake => {
-      if (intake && intake.date) {
-        const dateStr = intake.date.toISOString().split('T')[0];
-        if (dailyData[dateStr]) {
-          dailyData[dateStr].totalWater += intake.amount || 0;
-        }
-      }
-    });
-    
-    // Get goals with fallback
-    let goals = await NutritionalGoals.findOne({ userId: req.user._id });
-    if (!goals) {
-      goals = {
-        dailyCalories: 2000,
-        protein: 150,
-        carbs: 250,
-        fat: 67,
-        fiber: 25,
-        water: 2000
-      };
-    }
-    
-    res.json({
-      success: true,
-      startDate: start.toISOString().split('T')[0],
-      endDate: end.toISOString().split('T')[0],
-      dailyData: Object.values(dailyData),
-      goals
-    });
-  } catch (error) {
-    console.error('Weekly report error:', error);
-    res.status(500).json({ 
-      success: false,
-      message: 'Failed to generate weekly report',
-      error: error.message 
-    });
-  }
-});
 
+  app.post('/api/nutritional-goals', authenticate, async (req, res) => {
+        try {
+            // Check if goals already exist
+            const existingGoals = await NutritionalGoals.findOne({ userId: req.user._id });
+            if (existingGoals) {
+                return res.status(400).json({
+                    success: false,
+                    message: 'Nutritional goals already exist for this user'
+                });
+            }
+            
+            const goals = new NutritionalGoals({
+                ...req.body,
+                userId: req.user._id
+            });
+            
+            await goals.save();
+            
+            res.status(201).json({
+                success: true,
+                message: 'Nutritional goals created successfully',
+                data: goals
+            });
+        } catch (error) {
+            console.error('Create nutritional goals error:', error);
+            standardErrorResponse(res, 500, 'Failed to create nutritional goals', error.message);
+        }
+    });
+
+// Reports Routes
+    app.get('/api/reports/daily', authenticate, async (req, res) => {
+        try {
+            const { date } = req.query;
+            const targetDate = date ? new Date(date) : new Date();
+            
+            const startOfDay = new Date(targetDate);
+            startOfDay.setHours(0, 0, 0, 0);
+            
+            const endOfDay = new Date(targetDate);
+            endOfDay.setHours(23, 59, 59, 999);
+            
+            // Get meals for the day
+            const meals = await Meal.find({
+                userId: req.user._id,
+                date: { $gte: startOfDay, $lte: endOfDay }
+            }).populate('items.foodItem').populate('items.recipe');
+            
+            // Get water intake for the day
+            const waterIntakes = await WaterIntake.find({
+                userId: req.user._id,
+                date: { $gte: startOfDay, $lte: endOfDay }
+            });
+            
+            // Calculate totals
+            const totalNutrition = meals.reduce((acc, meal) => ({
+                calories: acc.calories + (meal.totalNutrition?.calories || 0),
+                protein: acc.protein + (meal.totalNutrition?.protein || 0),
+                carbs: acc.carbs + (meal.totalNutrition?.carbs || 0),
+                fat: acc.fat + (meal.totalNutrition?.fat || 0),
+                fiber: acc.fiber + (meal.totalNutrition?.fiber || 0)
+            }), { calories: 0, protein: 0, carbs: 0, fat: 0, fiber: 0 });
+            
+            const totalWater = waterIntakes.reduce((sum, intake) => sum + intake.amount, 0);
+            
+            // Get goals
+            const goals = await NutritionalGoals.findOne({ userId: req.user._id }) || {
+                dailyCalories: 2000,
+                protein: 150,
+                carbs: 250,
+                fat: 67,
+                fiber: 25,
+                water: 2000
+            };
+            
+            res.json({
+                success: true,
+                data: {
+                    date: targetDate.toISOString().split('T')[0],
+                    meals: meals,
+                    waterIntakes: waterIntakes,
+                    totalNutrition: totalNutrition,
+                    totalWater: totalWater,
+                    goals: goals
+                }
+            });
+        } catch (error) {
+            console.error('Daily report error:', error);
+            standardErrorResponse(res, 500, 'Failed to generate daily report', error.message);
+        }
+    });
+
+    app.get('/api/reports/weekly', authenticate, async (req, res) => {
+        try {
+            const { startDate } = req.query;
+            const start = startDate ? new Date(startDate) : new Date();
+            start.setHours(0, 0, 0, 0);
+            
+            const end = new Date(start);
+            end.setDate(start.getDate() + 6);
+            end.setHours(23, 59, 59, 999);
+            
+            // Get meals for the week
+            const meals = await Meal.find({
+                userId: req.user._id,
+                date: { $gte: start, $lte: end }
+            }).populate('items.foodItem').populate('items.recipe');
+            
+            // Get water intake for the week
+            const waterIntakes = await WaterIntake.find({
+                userId: req.user._id,
+                date: { $gte: start, $lte: end }
+            });
+            
+            // Group by date
+            const dailyData = {};
+            for (let i = 0; i < 7; i++) {
+                const currentDate = new Date(start);
+                currentDate.setDate(start.getDate() + i);
+                const dateStr = currentDate.toISOString().split('T')[0];
+                
+                dailyData[dateStr] = {
+                    date: dateStr,
+                    meals: [],
+                    totalNutrition: { calories: 0, protein: 0, carbs: 0, fat: 0, fiber: 0 },
+                    totalWater: 0
+                };
+            }
+            
+            // Process meals
+            meals.forEach(meal => {
+                const dateStr = meal.date.toISOString().split('T')[0];
+                if (dailyData[dateStr]) {
+                    dailyData[dateStr].meals.push(meal);
+                    dailyData[dateStr].totalNutrition.calories += meal.totalNutrition?.calories || 0;
+                    dailyData[dateStr].totalNutrition.protein += meal.totalNutrition?.protein || 0;
+                    dailyData[dateStr].totalNutrition.carbs += meal.totalNutrition?.carbs || 0;
+                    dailyData[dateStr].totalNutrition.fat += meal.totalNutrition?.fat || 0;
+                    dailyData[dateStr].totalNutrition.fiber += meal.totalNutrition?.fiber || 0;
+                }
+            });
+            
+            // Process water intakes
+            waterIntakes.forEach(intake => {
+                const dateStr = intake.date.toISOString().split('T')[0];
+                if (dailyData[dateStr]) {
+                    dailyData[dateStr].totalWater += intake.amount;
+                }
+            });
+            
+            // Get goals
+            const goals = await NutritionalGoals.findOne({ userId: req.user._id }) || {
+                dailyCalories: 2000,
+                protein: 150,
+                carbs: 250,
+                fat: 67,
+                fiber: 25,
+                water: 2000
+            };
+            
+            res.json({
+                success: true,
+                data: {
+                    startDate: start.toISOString().split('T')[0],
+                    endDate: end.toISOString().split('T')[0],
+                    dailyData: Object.values(dailyData),
+                    goals: goals
+                }
+            });
+        } catch (error) {
+            console.error('Weekly report error:', error);
+            standardErrorResponse(res, 500, 'Failed to generate weekly report', error.message);
+        }
+    });
 // Weight Tracking Routes
 app.get('/api/weight-tracking', authenticate, async (req, res) => {
   try {
