@@ -2161,6 +2161,173 @@ app.get('/effectiveness', authenticate, async (req, res) => {
   }
 });
 
+// GET /api/intake-timeline - Get intake counts by date for analytics
+app.get('/api/intake-timeline', authenticate, async (req, res) => {
+  try {
+    const { 
+      userId, 
+      email, 
+      startDate, 
+      endDate, 
+      days = 30 
+    } = req.query;
+    
+    // Determine target user
+    let targetUserId = req.user._id; // Default to authenticated user
+    
+    // If userId or email is provided, find that user
+    if (userId || email) {
+      let targetUser;
+      
+      if (userId) {
+        targetUser = await User.findById(userId);
+      } else if (email) {
+        targetUser = await User.findOne({ email: email.toLowerCase() });
+      }
+      
+      if (!targetUser) {
+        return res.status(404).json({ message: 'Target user not found' });
+      }
+      
+      targetUserId = targetUser._id;
+      
+      // Optional: Add permission check here if needed
+      // For example, only allow family members or the user themselves
+      // You can implement family/permission checking logic here
+    }
+    
+    // Calculate date range
+    let start, end;
+    
+    if (startDate && endDate) {
+      start = new Date(startDate);
+      end = new Date(endDate);
+    } else {
+      // Default to last N days
+      end = new Date();
+      end.setHours(23, 59, 59, 999); // End of today
+      
+      start = new Date();
+      start.setDate(start.getDate() - parseInt(days));
+      start.setHours(0, 0, 0, 0); // Start of the day N days ago
+    }
+    
+    console.log(`Fetching intake timeline for user ${targetUserId} from ${start.toISOString()} to ${end.toISOString()}`);
+    
+    // Aggregate intake data by date
+    const intakeTimeline = await SupplementIntake.aggregate([
+      {
+        $match: {
+          userId: new mongoose.Types.ObjectId(targetUserId),
+          wasTaken: true,
+          takenAt: {
+            $gte: start,
+            $lte: end
+          }
+        }
+      },
+      {
+        $group: {
+          _id: {
+            $dateToString: {
+              format: "%Y-%m-%d",
+              date: "$takenAt"
+            }
+          },
+          count: { $sum: 1 },
+          intakes: {
+            $push: {
+              supplementName: "$supplement",
+              dosageTaken: "$dosageTaken",
+              takenAt: "$takenAt",
+              notes: "$notes"
+            }
+          }
+        }
+      },
+      {
+        $project: {
+          _id: 0,
+          date: "$_id",
+          count: 1,
+          intakes: 1
+        }
+      },
+      {
+        $sort: { date: 1 }
+      }
+    ]);
+    
+    // Create a complete timeline with zero counts for missing dates
+    const completeTimeline = [];
+    const currentDate = new Date(start);
+    
+    // Create a map for quick lookup of existing data
+    const intakeMap = {};
+    intakeTimeline.forEach(item => {
+      intakeMap[item.date] = item;
+    });
+    
+    // Fill in the complete timeline
+    while (currentDate <= end) {
+      const dateKey = currentDate.toISOString().split('T')[0];
+      const existingData = intakeMap[dateKey];
+      
+      completeTimeline.push({
+        date: dateKey,
+        count: existingData ? existingData.count : 0,
+        intakes: existingData ? existingData.intakes : [],
+        displayDate: `${currentDate.getMonth() + 1}/${currentDate.getDate()}`,
+        fullDate: currentDate.toLocaleDateString('en-US', { 
+          weekday: 'short', 
+          month: 'short', 
+          day: 'numeric' 
+        })
+      });
+      
+      currentDate.setDate(currentDate.getDate() + 1);
+    }
+    
+    // Calculate summary statistics
+    const totalIntakes = completeTimeline.reduce((sum, day) => sum + day.count, 0);
+    const daysWithIntakes = completeTimeline.filter(day => day.count > 0).length;
+    const averageIntakesPerDay = completeTimeline.length > 0 ? 
+      (totalIntakes / completeTimeline.length).toFixed(1) : 0;
+    
+    // Get user info for response
+    const userInfo = await User.findById(targetUserId).select('username email');
+    
+    res.json({
+      success: true,
+      user: {
+        id: targetUserId,
+        username: userInfo.username,
+        email: userInfo.email
+      },
+      period: {
+        startDate: start.toISOString(),
+        endDate: end.toISOString(),
+        totalDays: completeTimeline.length
+      },
+      summary: {
+        totalIntakes,
+        daysWithIntakes,
+        daysWithoutIntakes: completeTimeline.length - daysWithIntakes,
+        averageIntakesPerDay: parseFloat(averageIntakesPerDay),
+        adherencePercentage: completeTimeline.length > 0 ? 
+          Math.round((daysWithIntakes / completeTimeline.length) * 100) : 0
+      },
+      timeline: completeTimeline
+    });
+    
+  } catch (error) {
+    console.error('Intake timeline error:', error);
+    res.status(500).json({ 
+      success: false,
+      message: error.message 
+    });
+  }
+});
 // Get interaction warnings
 app.get('/api/interactions', authenticate, async (req, res) => {
   try {
