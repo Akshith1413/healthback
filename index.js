@@ -1230,50 +1230,111 @@ app.post('/api/water-intake', authenticate, async (req, res) => {
   }
 });
 
-// Nutritional Goals Routes
 app.get('/api/nutritional-goals', authenticate, async (req, res) => {
   try {
+    // Get HealthProfile model from mongoose (it should be available since it's defined in server.js)
+    const HealthProfile = mongoose.model('HealthProfile');
+    const NutritionalGoals = mongoose.model('NutritionalGoals');
+    
     let goals = await NutritionalGoals.findOne({ userId: req.user._id });
     
     if (!goals) {
-      // Create default goals based on user profile
+      // Create default goals based on user profile or use fallback defaults
       const healthProfile = await HealthProfile.findOne({ userId: req.user._id });
-      if (healthProfile) {
-        const bmr = healthProfile.gender === 'Male' 
-          ? 88.362 + (13.397 * healthProfile.weight) + (4.799 * healthProfile.height) - (5.677 * healthProfile.age)
-          : 447.593 + (9.247 * healthProfile.weight) + (3.098 * healthProfile.height) - (4.330 * healthProfile.age);
-        
-        const activityMultipliers = {
-          'Sedentary': 1.2,
-          'Lightly Active': 1.375,
-          'Moderately Active': 1.55,
-          'Very Active': 1.725,
-          'Extremely Active': 1.9
-        };
-        
-        const tdee = bmr * (activityMultipliers[healthProfile.activityLevel] || 1.2);
-        
+      
+      if (healthProfile && healthProfile.weight && healthProfile.height && healthProfile.age && healthProfile.gender) {
+        try {
+          // Calculate goals based on health profile
+          const bmr = healthProfile.gender === 'Male' 
+            ? 88.362 + (13.397 * healthProfile.weight) + (4.799 * healthProfile.height) - (5.677 * healthProfile.age)
+            : 447.593 + (9.247 * healthProfile.weight) + (3.098 * healthProfile.height) - (4.330 * healthProfile.age);
+          
+          const activityMultipliers = {
+            'Sedentary': 1.2,
+            'Lightly Active': 1.375,
+            'Moderately Active': 1.55,
+            'Very Active': 1.725,
+            'Extremely Active': 1.9
+          };
+          
+          const tdee = bmr * (activityMultipliers[healthProfile.activityLevel] || 1.2);
+          
+          goals = new NutritionalGoals({
+            userId: req.user._id,
+            dailyCalories: Math.round(tdee),
+            protein: Math.round((tdee * 0.3) / 4), // 30% of calories from protein
+            carbs: Math.round((tdee * 0.5) / 4),   // 50% of calories from carbs
+            fat: Math.round((tdee * 0.2) / 9),     // 20% of calories from fat
+            fiber: 25, // Default fiber goal
+            water: 2000 // Default water goal in ml
+          });
+        } catch (calcError) {
+          console.error('Error calculating goals from health profile:', calcError);
+          // Fallback to defaults if calculation fails
+          goals = new NutritionalGoals({
+            userId: req.user._id,
+            dailyCalories: 2000,
+            protein: 150,
+            carbs: 250,
+            fat: 67,
+            fiber: 25,
+            water: 2000
+          });
+        }
+      } else {
+        // Use fallback defaults if no health profile or incomplete data
+        console.log('No health profile found or incomplete data, using default goals for user:', req.user._id);
         goals = new NutritionalGoals({
           userId: req.user._id,
-          dailyCalories: Math.round(tdee),
-          protein: Math.round((tdee * 0.3) / 4), // 30% of calories from protein
-          carbs: Math.round((tdee * 0.5) / 4),   // 50% of calories from carbs
-          fat: Math.round((tdee * 0.2) / 9)      // 20% of calories from fat
+          dailyCalories: 2000,
+          protein: 150,
+          carbs: 250,
+          fat: 67,
+          fiber: 25,
+          water: 2000
         });
-        
-        await goals.save();
       }
+      
+      await goals.save();
+      console.log('Created new nutritional goals for user:', req.user._id);
     }
     
-    res.json(goals);
+    // Ensure all required fields are present
+    const goalsData = goals.toObject ? goals.toObject() : goals;
+    
+    // Add missing fields with defaults if necessary
+    const completeGoals = {
+      dailyCalories: goalsData.dailyCalories || 2000,
+      protein: goalsData.protein || 150,
+      carbs: goalsData.carbs || 250,
+      fat: goalsData.fat || 67,
+      fiber: goalsData.fiber || 25,
+      water: goalsData.water || 2000,
+      ...goalsData
+    };
+    
+    res.json(completeGoals);
   } catch (error) {
     console.error('Get nutritional goals error:', error);
-    standardErrorResponse(res, 500, 'Failed to retrieve nutritional goals', error.message);
+    
+    // Return default goals instead of error for client-side fallback
+    res.json({
+      dailyCalories: 2000,
+      protein: 150,
+      carbs: 250,
+      fat: 67,
+      fiber: 25,
+      water: 2000,
+      fromDefaults: true,
+      message: 'Using default nutritional goals due to server error'
+    });
   }
 });
 
 app.put('/api/nutritional-goals', authenticate, async (req, res) => {
   try {
+    const NutritionalGoals = mongoose.model('NutritionalGoals');
+    
     let goals = await NutritionalGoals.findOne({ userId: req.user._id });
     
     if (goals) {
@@ -1288,37 +1349,81 @@ app.put('/api/nutritional-goals', authenticate, async (req, res) => {
     }
     
     res.json(goals);
-  }  catch (error) {
+  } catch (error) {
     console.error('Update nutritional goals error:', error);
-    standardErrorResponse(res, 500, 'Failed to update nutritional goals', error.message);
+    res.status(500).json({ 
+      success: false,
+      message: 'Failed to update nutritional goals',
+      error: error.message 
+    });
+  }
+});
+
+app.post('/api/nutritional-goals', authenticate, async (req, res) => {
+  try {
+    const NutritionalGoals = mongoose.model('NutritionalGoals');
+    
+    // Check if goals already exist
+    const existingGoals = await NutritionalGoals.findOne({ userId: req.user._id });
+    if (existingGoals) {
+      return res.status(400).json({
+        success: false,
+        message: 'Nutritional goals already exist for this user. Use PUT to update.'
+      });
+    }
+    
+    const goals = new NutritionalGoals({
+      ...req.body,
+      userId: req.user._id
+    });
+    
+    await goals.save();
+    
+    res.status(201).json({
+      success: true,
+      message: 'Nutritional goals created successfully',
+      data: goals
+    });
+  } catch (error) {
+    console.error('Create nutritional goals error:', error);
+    res.status(500).json({ 
+      success: false,
+      message: 'Failed to create nutritional goals',
+      error: error.message 
+    });
   }
 });
 
 // Reports and Analytics Routes
 app.get('/api/reports/daily', authenticate, async (req, res) => {
   try {
+    const Meal = mongoose.model('Meal');
+    const WaterIntake = mongoose.model('WaterIntake');
+    const NutritionalGoals = mongoose.model('NutritionalGoals');
+    
     const { date } = req.query;
     const targetDate = date ? new Date(date) : new Date();
+    
+    // Create proper date range
+    const startOfDay = new Date(targetDate);
+    startOfDay.setHours(0, 0, 0, 0);
+    
+    const endOfDay = new Date(targetDate);
+    endOfDay.setHours(23, 59, 59, 999);
     
     // Get meals for the day
     const meals = await Meal.find({
       userId: req.user._id,
-      date: {
-        $gte: new Date(targetDate.setHours(0, 0, 0, 0)),
-        $lt: new Date(targetDate.setHours(23, 59, 59, 999))
-      }
+      date: { $gte: startOfDay, $lte: endOfDay }
     }).populate('items.foodItem').populate('items.recipe');
     
     // Get water intake for the day
     const waterIntakes = await WaterIntake.find({
       userId: req.user._id,
-      date: {
-        $gte: new Date(targetDate.setHours(0, 0, 0, 0)),
-        $lt: new Date(targetDate.setHours(23, 59, 59, 999))
-      }
+      date: { $gte: startOfDay, $lte: endOfDay }
     });
     
-    // Calculate totals
+    // Calculate totals with safe defaults
     const totalNutrition = meals.reduce((acc, meal) => ({
       calories: acc.calories + (meal.totalNutrition?.calories || 0),
       protein: acc.protein + (meal.totalNutrition?.protein || 0),
@@ -1327,26 +1432,46 @@ app.get('/api/reports/daily', authenticate, async (req, res) => {
       fiber: acc.fiber + (meal.totalNutrition?.fiber || 0)
     }), { calories: 0, protein: 0, carbs: 0, fat: 0, fiber: 0 });
     
-    const totalWater = waterIntakes.reduce((sum, intake) => sum + intake.amount, 0);
+    const totalWater = waterIntakes.reduce((sum, intake) => sum + (intake.amount || 0), 0);
     
-    // Get goals
-    const goals = await NutritionalGoals.findOne({ userId: req.user._id });
+    // Get goals with fallback
+    let goals = await NutritionalGoals.findOne({ userId: req.user._id });
+    if (!goals) {
+      goals = {
+        dailyCalories: 2000,
+        protein: 150,
+        carbs: 250,
+        fat: 67,
+        fiber: 25,
+        water: 2000
+      };
+    }
     
     res.json({
-      date: targetDate,
-      meals,
-      waterIntakes,
+      success: true,
+      date: targetDate.toISOString().split('T')[0],
+      meals: meals || [],
+      waterIntakes: waterIntakes || [],
       totalNutrition,
       totalWater,
-      goals: goals || {}
+      goals
     });
   } catch (error) {
-    res.status(500).json({ message: 'Server error' });
+    console.error('Daily report error:', error);
+    res.status(500).json({ 
+      success: false,
+      message: 'Failed to generate daily report',
+      error: error.message 
+    });
   }
 });
 
 app.get('/api/reports/weekly', authenticate, async (req, res) => {
   try {
+    const Meal = mongoose.model('Meal');
+    const WaterIntake = mongoose.model('WaterIntake');
+    const NutritionalGoals = mongoose.model('NutritionalGoals');
+    
     const { startDate } = req.query;
     const start = startDate ? new Date(startDate) : new Date();
     start.setHours(0, 0, 0, 0);
@@ -1361,7 +1486,13 @@ app.get('/api/reports/weekly', authenticate, async (req, res) => {
       date: { $gte: start, $lte: end }
     }).populate('items.foodItem').populate('items.recipe');
     
-    // Group by date
+    // Get water intake for the week
+    const waterIntakes = await WaterIntake.find({
+      userId: req.user._id,
+      date: { $gte: start, $lte: end }
+    });
+    
+    // Group by date with proper initialization
     const dailyData = {};
     for (let i = 0; i < 7; i++) {
       const currentDate = new Date(start);
@@ -1376,43 +1507,59 @@ app.get('/api/reports/weekly', authenticate, async (req, res) => {
       };
     }
     
-    // Process meals
+    // Process meals with safe property access
     meals.forEach(meal => {
-      const dateStr = meal.date.toISOString().split('T')[0];
-      if (dailyData[dateStr]) {
-        dailyData[dateStr].meals.push(meal);
-        dailyData[dateStr].totalNutrition.calories += meal.totalNutrition?.calories || 0;
-        dailyData[dateStr].totalNutrition.protein += meal.totalNutrition?.protein || 0;
-        dailyData[dateStr].totalNutrition.carbs += meal.totalNutrition?.carbs || 0;
-        dailyData[dateStr].totalNutrition.fat += meal.totalNutrition?.fat || 0;
-        dailyData[dateStr].totalNutrition.fiber += meal.totalNutrition?.fiber || 0;
+      if (meal && meal.date) {
+        const dateStr = meal.date.toISOString().split('T')[0];
+        if (dailyData[dateStr]) {
+          dailyData[dateStr].meals.push(meal);
+          const nutrition = meal.totalNutrition || {};
+          dailyData[dateStr].totalNutrition.calories += nutrition.calories || 0;
+          dailyData[dateStr].totalNutrition.protein += nutrition.protein || 0;
+          dailyData[dateStr].totalNutrition.carbs += nutrition.carbs || 0;
+          dailyData[dateStr].totalNutrition.fat += nutrition.fat || 0;
+          dailyData[dateStr].totalNutrition.fiber += nutrition.fiber || 0;
+        }
       }
     });
     
-    // Get water intake for the week
-    const waterIntakes = await WaterIntake.find({
-      userId: req.user._id,
-      date: { $gte: start, $lte: end }
-    });
-    
+    // Process water intakes
     waterIntakes.forEach(intake => {
-      const dateStr = intake.date.toISOString().split('T')[0];
-      if (dailyData[dateStr]) {
-        dailyData[dateStr].totalWater += intake.amount;
+      if (intake && intake.date) {
+        const dateStr = intake.date.toISOString().split('T')[0];
+        if (dailyData[dateStr]) {
+          dailyData[dateStr].totalWater += intake.amount || 0;
+        }
       }
     });
     
-    // Get goals
-    const goals = await NutritionalGoals.findOne({ userId: req.user._id });
+    // Get goals with fallback
+    let goals = await NutritionalGoals.findOne({ userId: req.user._id });
+    if (!goals) {
+      goals = {
+        dailyCalories: 2000,
+        protein: 150,
+        carbs: 250,
+        fat: 67,
+        fiber: 25,
+        water: 2000
+      };
+    }
     
     res.json({
+      success: true,
       startDate: start.toISOString().split('T')[0],
       endDate: end.toISOString().split('T')[0],
       dailyData: Object.values(dailyData),
-      goals: goals || {}
+      goals
     });
   } catch (error) {
-    res.status(500).json({ message: 'Server error' });
+    console.error('Weekly report error:', error);
+    res.status(500).json({ 
+      success: false,
+      message: 'Failed to generate weekly report',
+      error: error.message 
+    });
   }
 });
 
