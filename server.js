@@ -2097,9 +2097,9 @@ app.get('/api/cost-reports', authenticate, async (req, res) => {
     const supplements = userSupplements.map(supp => {
       const supplementName = supp.customSupplement?.name || supp.supplementId?.name;
       const cost = supp.cost || {};
-      const dailyCost = cost.price && cost.quantity && supp.dosage && supp.frequency
-        ? calculateDailyCost(cost.price, cost.quantity, supp.dosage, supp.frequency)
-        : 0;
+      const costPerServing = cost.price && cost.quantity ? cost.price / cost.quantity : 0;
+const dosesPerDay = getDosesPerDay(supp.frequency); // Use the same helper function
+const dailyCost = costPerServing * dosesPerDay;
       
       return {
         name: supplementName,
