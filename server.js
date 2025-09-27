@@ -1908,6 +1908,7 @@ app.delete('/api/user-supplements/:id', authenticate, async (req, res) => {
   }
 });
 // Get intake records (alternative to intake-history)
+// Update the intake history endpoint to properly populate supplement names
 app.get('/api/intake', authenticate, async (req, res) => {
   try {
     const { startDate, endDate, userSupplementId, limit = 100 } = req.query;
@@ -1925,12 +1926,42 @@ app.get('/api/intake', authenticate, async (req, res) => {
     }
     
     const intakeHistory = await SupplementIntake.find(query)
-      .populate('userSupplementId')
+      .populate({
+        path: 'userSupplementId',
+        populate: {
+          path: 'supplementId',
+          model: 'Supplement'
+        }
+      })
       .sort({ takenAt: -1 })
       .limit(parseInt(limit));
     
-    res.json(intakeHistory);
+    // Process the data to include supplement name for easy frontend display
+    const processedHistory = intakeHistory.map(intake => {
+      const userSupplement = intake.userSupplementId;
+      let supplementName = 'Unknown Supplement';
+      
+      if (userSupplement) {
+        if (userSupplement.customSupplement && userSupplement.customSupplement.name) {
+          supplementName = userSupplement.customSupplement.name;
+        } else if (userSupplement.supplementId && userSupplement.supplementId.name) {
+          supplementName = userSupplement.supplementId.name;
+        }
+      }
+      
+      return {
+        ...intake.toObject(),
+        supplement: supplementName,
+        dosageTaken: intake.dosageTaken || (userSupplement ? userSupplement.dosage : 0),
+        unit: userSupplement ? 
+              (userSupplement.customSupplement ? userSupplement.customSupplement.dosageUnit : 
+               userSupplement.supplementId ? userSupplement.supplementId.dosageUnit : 'units') : 'units'
+      };
+    });
+    
+    res.json(processedHistory);
   } catch (error) {
+    console.error('Intake history error:', error);
     res.status(500).json({ message: error.message });
   }
 });
@@ -1993,41 +2024,64 @@ app.get('/api/intake-history', authenticate, async (req, res) => {
 });
 
 // Adherence reports endpoint (add this if not exists)
+// Update the adherence reports endpoint
 app.get('/api/adherence-reports', authenticate, async (req, res) => {
   try {
     const { startDate, endDate } = req.query;
     const start = new Date(startDate || new Date().setDate(new Date().getDate() - 30));
     const end = new Date(endDate || new Date());
     
-    const userSupplements = await UserSupplement.find({ userId: req.user._id });
+    const userSupplements = await UserSupplement.find({ 
+      userId: req.user._id,
+      status: 'Active'
+    }).populate('supplementId');
     
     const reports = await Promise.all(userSupplements.map(async (supp) => {
-      // Calculate expected intakes based on frequency
-      const expectedIntakes = calculateExpectedIntakes(supp, start, end);
-      
-      // Get actual intakes
-      const actualIntakes = await SupplementIntake.find({
-        userId: req.user._id,
-        userSupplementId: supp._id,
-        takenAt: { $gte: start, $lte: end },
-        wasTaken: true
-      });
-      
-      const adherenceRate = expectedIntakes.length > 0 
-        ? (actualIntakes.length / expectedIntakes.length) * 100 
-        : 100;
-      
-      return {
-        supplement: supp.customSupplement?.name || (await Supplement.findById(supp.supplementId))?.name,
-        expectedIntakes: expectedIntakes.length,
-        actualIntakes: actualIntakes.length,
-        adherenceRate: Math.round(adherenceRate),
-        missedIntakes: expectedIntakes.length - actualIntakes.length
-      };
+      try {
+        // Calculate expected intakes based on frequency and date range
+        const daysInPeriod = Math.ceil((end - start) / (1000 * 60 * 60 * 24));
+        const dosesPerDay = getDosesPerDay(supp.frequency);
+        const expectedIntakes = daysInPeriod * dosesPerDay;
+        
+        // Get actual intakes for this supplement
+        const actualIntakes = await SupplementIntake.countDocuments({
+          userId: req.user._id,
+          userSupplementId: supp._id,
+          takenAt: { $gte: start, $lte: end },
+          wasTaken: true
+        });
+        
+        const adherenceRate = expectedIntakes > 0 
+          ? Math.round((actualIntakes / expectedIntakes) * 100)
+          : 100;
+        
+        const supplementName = supp.customSupplement?.name || 
+                             supp.supplementId?.name || 
+                             'Unknown Supplement';
+        
+        return {
+          supplement: supplementName,
+          supplementId: supp._id,
+          expectedIntakes: expectedIntakes,
+          actualIntakes: actualIntakes,
+          adherenceRate: adherenceRate,
+          missedIntakes: Math.max(0, expectedIntakes - actualIntakes)
+        };
+      } catch (error) {
+        console.error(`Error calculating adherence for supplement ${supp._id}:`, error);
+        return {
+          supplement: 'Error calculating',
+          expectedIntakes: 0,
+          actualIntakes: 0,
+          adherenceRate: 0,
+          missedIntakes: 0
+        };
+      }
     }));
     
     res.json(reports);
   } catch (error) {
+    console.error('Adherence reports error:', error);
     res.status(500).json({ message: error.message });
   }
 });
@@ -2355,16 +2409,11 @@ function calculateDailyCost(price, quantity, dosage, frequency) {
 // Helper function to get doses per day based on frequency
 function getDosesPerDay(frequency) {
   switch (frequency) {
-    case 'Once Daily':
-      return 1;
-    case 'Twice Daily':
-      return 2;
-    case 'Three Times Daily':
-      return 3;
-    case 'As Needed':
-      return 0.5; // Estimate
-    default:
-      return 1;
+    case 'Once Daily': return 1;
+    case 'Twice Daily': return 2;
+    case 'Three Times Daily': return 3;
+    case 'As Needed': return 1; // Default to 1 for calculation
+    default: return 1;
   }
 }
 require('./index')(app, mongoose, authenticate);
