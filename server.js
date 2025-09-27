@@ -2161,40 +2161,14 @@ app.get('/effectiveness', authenticate, async (req, res) => {
   }
 });
 
-// GET /api/intake-timeline - Get intake counts by date for analytics
-// GET /api/intake-timeline - Get intake counts by date for analytics
+// GET /api/intake-timeline - Get intake counts by date for analytics - FIXED VERSION
 app.get('/api/intake-timeline', authenticate, async (req, res) => {
   try {
-    const { 
-      userId, 
-      email, 
-      startDate, 
-      endDate, 
-      days = 14  // Changed to 14 days for your analytics tab
-    } = req.query;
+    const { days = 14 } = req.query;
     
-    console.log('Received request with params:', { userId, email, startDate, endDate, days });
+    console.log('Received intake-timeline request for days:', days);
     
-    // Determine target user
-    let targetUserId = req.user._id;
-    
-    if (userId || email) {
-      let targetUser;
-      
-      if (userId) {
-        targetUser = await User.findById(userId);
-      } else if (email) {
-        targetUser = await User.findOne({ email: email.toLowerCase() });
-      }
-      
-      if (!targetUser) {
-        return res.status(404).json({ message: 'Target user not found' });
-      }
-      
-      targetUserId = targetUser._id;
-    }
-    
-    // Calculate date range - LAST 14 DAYS
+    // Calculate date range - LAST N DAYS
     const end = new Date();
     end.setHours(23, 59, 59, 999);
     
@@ -2204,11 +2178,11 @@ app.get('/api/intake-timeline', authenticate, async (req, res) => {
     
     console.log(`Date range: ${start.toISOString()} to ${end.toISOString()}`);
     
-    // Aggregate intake data by date - FIXED AGGREGATION
+    // FIXED AGGREGATION - Count unique supplement intakes per day
     const intakeTimeline = await SupplementIntake.aggregate([
       {
         $match: {
-          userId: new mongoose.Types.ObjectId(targetUserId),
+          userId: new mongoose.Types.ObjectId(req.user._id),
           wasTaken: true,
           takenAt: {
             $gte: start,
@@ -2217,21 +2191,31 @@ app.get('/api/intake-timeline', authenticate, async (req, res) => {
         }
       },
       {
+        // Group by date AND supplement to count unique supplements taken each day
         $group: {
           _id: {
-            $dateToString: {
-              format: "%Y-%m-%d",
-              date: "$takenAt",
-              timezone: "UTC"
-            }
+            date: {
+              $dateToString: {
+                format: "%Y-%m-%d",
+                date: "$takenAt",
+                timezone: "UTC"
+              }
+            },
+            userSupplementId: "$userSupplementId"
           },
+          firstIntake: { $first: "$$ROOT" }
+        }
+      },
+      {
+        // Now group by date only to count unique supplements per day
+        $group: {
+          _id: "$_id.date",
           count: { $sum: 1 },
           intakes: {
             $push: {
-              supplementName: "$supplement",
-              dosageTaken: "$dosageTaken",
-              takenAt: "$takenAt",
-              notes: "$notes"
+              supplementId: "$firstIntake.userSupplementId",
+              takenAt: "$firstIntake.takenAt",
+              dosageTaken: "$firstIntake.dosageTaken"
             }
           }
         }
@@ -2249,9 +2233,10 @@ app.get('/api/intake-timeline', authenticate, async (req, res) => {
       }
     ]);
     
-    console.log('Raw aggregation result:', intakeTimeline);
+    console.log('Aggregation result count:', intakeTimeline.length);
+    console.log('Sample aggregated data:', intakeTimeline.slice(0, 3));
     
-    // Create complete timeline for last 14 days
+    // Create complete timeline for the period
     const completeTimeline = [];
     const currentDate = new Date(start);
     
@@ -2287,6 +2272,10 @@ app.get('/api/intake-timeline', authenticate, async (req, res) => {
     }
     
     console.log('Complete timeline length:', completeTimeline.length);
+    console.log('Timeline counts:', completeTimeline.map(day => ({
+      date: day.date,
+      count: day.count
+    })));
     
     res.json({
       success: true,
