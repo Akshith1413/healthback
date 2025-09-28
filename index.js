@@ -1274,14 +1274,15 @@ app.post('/api/meals', authenticate, async (req, res) => {
         }
     });
 
-
-    // Add this route to your existing server code
+// GET /api/reports/weekly-calories - FIXED VERSION
 app.get('/api/reports/weekly-calories', authenticate, async (req, res) => {
   try {
     const { startDate } = req.query;
     const userId = req.user._id;
     
-    // Calculate date range (last 7 days)
+    console.log('Weekly calories request for user:', userId, 'startDate:', startDate);
+    
+    // Calculate date range (last 7 days including today)
     const endDate = startDate ? new Date(startDate) : new Date();
     const startDateObj = new Date(endDate);
     startDateObj.setDate(endDate.getDate() - 6); // 7 days total
@@ -1289,6 +1290,8 @@ app.get('/api/reports/weekly-calories', authenticate, async (req, res) => {
     // Set to start and end of days
     startDateObj.setHours(0, 0, 0, 0);
     endDate.setHours(23, 59, 59, 999);
+    
+    console.log('Date range:', startDateObj.toISOString(), 'to', endDate.toISOString());
     
     // Get meals for the date range
     const meals = await Meal.find({
@@ -1298,7 +1301,12 @@ app.get('/api/reports/weekly-calories', authenticate, async (req, res) => {
         $lte: endDate 
       },
       isActive: true
-    }).populate('items.foodItem').populate('items.recipe');
+    })
+    .populate('items.foodItem')
+    .populate('items.recipe')
+    .lean(); // Use lean for better performance
+    
+    console.log('Found meals:', meals.length);
     
     // Get water intake for the date range
     const waterIntakes = await WaterIntake.find({
@@ -1307,12 +1315,14 @@ app.get('/api/reports/weekly-calories', authenticate, async (req, res) => {
         $gte: startDateObj, 
         $lte: endDate 
       }
-    });
+    }).lean();
+    
+    console.log('Found water intakes:', waterIntakes.length);
     
     // Group data by day
     const dailyData = {};
     
-    // Initialize all days in the range
+    // Initialize all days in the range with proper structure
     for (let i = 0; i < 7; i++) {
       const currentDate = new Date(startDateObj);
       currentDate.setDate(startDateObj.getDate() + i);
@@ -1331,15 +1341,62 @@ app.get('/api/reports/weekly-calories', authenticate, async (req, res) => {
       };
     }
     
-    // Process meals data
+    // Process meals data - FIXED: Calculate nutrition if totalNutrition is missing
     meals.forEach(meal => {
       const dateKey = meal.date.toISOString().split('T')[0];
       if (dailyData[dateKey]) {
-        dailyData[dateKey].calories += meal.totalNutrition?.calories || 0;
-        dailyData[dateKey].protein += meal.totalNutrition?.protein || 0;
-        dailyData[dateKey].carbs += meal.totalNutrition?.carbs || 0;
-        dailyData[dateKey].fat += meal.totalNutrition?.fat || 0;
-        dailyData[dateKey].fiber += meal.totalNutrition?.fiber || 0;
+        let mealCalories = 0;
+        let mealProtein = 0;
+        let mealCarbs = 0;
+        let mealFat = 0;
+        let mealFiber = 0;
+        
+        // Use totalNutrition if available and valid
+        if (meal.totalNutrition && meal.totalNutrition.calories > 0) {
+          mealCalories = meal.totalNutrition.calories || 0;
+          mealProtein = meal.totalNutrition.protein || 0;
+          mealCarbs = meal.totalNutrition.carbs || 0;
+          mealFat = meal.totalNutrition.fat || 0;
+          mealFiber = meal.totalNutrition.fiber || 0;
+        } else if (meal.items && meal.items.length > 0) {
+          // Calculate nutrition from items
+          meal.items.forEach(item => {
+            let itemNutrition = {};
+            
+            if (item.foodItem) {
+              // Food item
+              itemNutrition = {
+                calories: item.foodItem.calories || 0,
+                protein: item.foodItem.protein || 0,
+                carbs: item.foodItem.carbs || 0,
+                fat: item.foodItem.fat || 0,
+                fiber: item.foodItem.fiber || 0
+              };
+            } else if (item.recipe && item.recipe.nutrition) {
+              // Recipe
+              itemNutrition = {
+                calories: item.recipe.nutrition.calories || 0,
+                protein: item.recipe.nutrition.protein || 0,
+                carbs: item.recipe.nutrition.carbs || 0,
+                fat: item.recipe.nutrition.fat || 0,
+                fiber: item.recipe.nutrition.fiber || 0
+              };
+            }
+            
+            const quantity = item.quantity || 1;
+            mealCalories += (itemNutrition.calories || 0) * quantity;
+            mealProtein += (itemNutrition.protein || 0) * quantity;
+            mealCarbs += (itemNutrition.carbs || 0) * quantity;
+            mealFat += (itemNutrition.fat || 0) * quantity;
+            mealFiber += (itemNutrition.fiber || 0) * quantity;
+          });
+        }
+        
+        dailyData[dateKey].calories += Math.round(mealCalories);
+        dailyData[dateKey].protein += Math.round(mealProtein * 100) / 100;
+        dailyData[dateKey].carbs += Math.round(mealCarbs * 100) / 100;
+        dailyData[dateKey].fat += Math.round(mealFat * 100) / 100;
+        dailyData[dateKey].fiber += Math.round(mealFiber * 100) / 100;
       }
     });
     
@@ -1363,6 +1420,8 @@ app.get('/api/reports/weekly-calories', authenticate, async (req, res) => {
     
     // Sort by date
     weeklyData.sort((a, b) => new Date(a.date) - new Date(b.date));
+    
+    console.log('Weekly data calculated:', weeklyData);
     
     res.json({
       success: true,
