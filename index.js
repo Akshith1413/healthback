@@ -1115,75 +1115,110 @@ app.get('/api/recipes', authenticate, async (req, res) => {
         }
     });
 
-    app.post('/api/meals', authenticate, async (req, res) => {
-        try {
-            const mealData = req.body;
+    // In your server code, update the meal creation route
+app.post('/api/meals', authenticate, async (req, res) => {
+    try {
+        const mealData = req.body;
+        
+        console.log('Received meal data:', mealData);
+        
+        // Process items - handle both USDA foods and regular food items
+        const processedItems = await Promise.all(mealData.items.map(async (item) => {
+            console.log('Processing item:', item);
             
-            // Process items - create FoodItem records for USDA foods
-            const processedItems = await Promise.all(mealData.items.map(async (item) => {
-                if (item.fdcId) {
-                    // This is a USDA food item, create a FoodItem record first
-                    const foodItem = new FoodItem({
-                        name: item.name,
-                        brand: item.brandOwner || item.brand || '',
-                        servingSize: `${item.servingSize || 100} ${item.servingSizeUnit || 'g'}`,
-                        calories: item.calories || 0,
-                        protein: item.protein || 0,
-                        carbs: item.carbs || 0,
-                        fat: item.fat || 0,
-                        fiber: item.fiber || 0,
-                        isCustom: true,
-                        createdBy: req.user._id
-                    });
-                    
-                    await foodItem.save();
-                    
-                    return {
-                        foodItem: foodItem._id,
-                        quantity: item.quantity || 1,
-                        unit: item.servingSizeUnit || 'g'
-                    };
-                } else if (item.foodItem) {
-                    // Regular food item with foodItem ID
-                    return {
-                        foodItem: item.foodItem,
-                        quantity: item.quantity || 1,
-                        unit: item.unit || 'serving'
-                    };
-                } else {
-                    throw new Error('Invalid food item structure');
-                }
-            }));
-            
-            // Create the meal with processed items
-            const meal = new Meal({
-                userId: req.user._id,
-                name: mealData.name,
-                type: mealData.type,
-                items: processedItems,
-                date: new Date(mealData.date),
-                time: mealData.time || new Date().toLocaleTimeString(),
-                notes: mealData.notes || ''
-            });
-            
-            await meal.save();
-            
-            // Populate and return the meal
-            const populatedMeal = await Meal.findById(meal._id)
-                .populate('items.foodItem')
-                .populate('items.recipe');
+            if (item.fdcId) {
+                // This is a USDA food item - create a FoodItem record
+                const foodItem = new FoodItem({
+                    name: item.name,
+                    brand: item.brandOwner || item.brand || '',
+                    servingSize: `${item.servingSize || 100} ${item.servingSizeUnit || 'g'}`,
+                    calories: item.calories || 0,
+                    protein: item.protein || 0,
+                    carbs: item.carbs || 0,
+                    fat: item.fat || 0,
+                    fiber: item.fiber || 0,
+                    isCustom: true,
+                    createdBy: req.user._id
+                });
                 
-            res.status(201).json({
-                success: true,
-                message: 'Meal created successfully',
-                data: populatedMeal
-            });
+                await foodItem.save();
+                console.log('Created food item:', foodItem);
+                
+                return {
+                    foodItem: foodItem._id,
+                    quantity: item.quantity || 1,
+                    unit: item.servingSizeUnit || 'g'
+                };
+            } else if (item.foodItem) {
+                // Regular food item with foodItem ID
+                return {
+                    foodItem: item.foodItem,
+                    quantity: item.quantity || 1,
+                    unit: item.unit || 'serving'
+                };
+            } else if (item.calories !== undefined) {
+                // Direct nutrition data without fdcId - create a custom food item
+                const foodItem = new FoodItem({
+                    name: item.name || 'Custom Food',
+                    brand: item.brandOwner || item.brand || '',
+                    servingSize: `${item.servingSize || 100} ${item.servingSizeUnit || 'g'}`,
+                    calories: item.calories || 0,
+                    protein: item.protein || 0,
+                    carbs: item.carbs || 0,
+                    fat: item.fat || 0,
+                    fiber: item.fiber || 0,
+                    isCustom: true,
+                    createdBy: req.user._id
+                });
+                
+                await foodItem.save();
+                console.log('Created custom food item:', foodItem);
+                
+                return {
+                    foodItem: foodItem._id,
+                    quantity: item.quantity || 1,
+                    unit: item.servingSizeUnit || 'g'
+                };
+            } else {
+                throw new Error('Invalid food item structure');
+            }
+        }));
+
+        console.log('Processed items:', processedItems);
+
+        // Create the meal with processed items
+        const meal = new Meal({
+            userId: req.user._id,
+            name: mealData.name,
+            type: mealData.type,
+            items: processedItems,
+            date: new Date(mealData.date),
+            time: mealData.time || new Date().toLocaleTimeString(),
+            notes: mealData.notes || ''
+        });
+
+        console.log('Saving meal:', meal);
+        
+        await meal.save();
+
+        // Populate and return the meal with full nutrition data
+        const populatedMeal = await Meal.findById(meal._id)
+            .populate('items.foodItem')
+            .populate('items.recipe');
             
-        } catch (error) {
-            console.error('Error creating meal:', error);
-            standardErrorResponse(res, 500, 'Failed to create meal', error.message);
-        }
-    });
+        console.log('Populated meal:', populatedMeal);
+            
+        res.status(201).json({
+            success: true,
+            message: 'Meal created successfully',
+            data: populatedMeal
+        });
+        
+    } catch (error) {
+        console.error('Error creating meal:', error);
+        standardErrorResponse(res, 500, 'Failed to create meal', error.message);
+    }
+});
 
     app.delete('/api/meals/:id', authenticate, async (req, res) => {
         try {
