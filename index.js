@@ -1273,6 +1273,116 @@ app.post('/api/meals', authenticate, async (req, res) => {
             standardErrorResponse(res, 500, 'Failed to retrieve water intake data', error.message);
         }
     });
+
+
+    // Add this route to your existing server code
+app.get('/api/reports/weekly-calories', authenticate, async (req, res) => {
+  try {
+    const { startDate } = req.query;
+    const userId = req.user._id;
+    
+    // Calculate date range (last 7 days)
+    const endDate = startDate ? new Date(startDate) : new Date();
+    const startDateObj = new Date(endDate);
+    startDateObj.setDate(endDate.getDate() - 6); // 7 days total
+    
+    // Set to start and end of days
+    startDateObj.setHours(0, 0, 0, 0);
+    endDate.setHours(23, 59, 59, 999);
+    
+    // Get meals for the date range
+    const meals = await Meal.find({
+      userId: userId,
+      date: { 
+        $gte: startDateObj, 
+        $lte: endDate 
+      },
+      isActive: true
+    }).populate('items.foodItem').populate('items.recipe');
+    
+    // Get water intake for the date range
+    const waterIntakes = await WaterIntake.find({
+      userId: userId,
+      date: { 
+        $gte: startDateObj, 
+        $lte: endDate 
+      }
+    });
+    
+    // Group data by day
+    const dailyData = {};
+    
+    // Initialize all days in the range
+    for (let i = 0; i < 7; i++) {
+      const currentDate = new Date(startDateObj);
+      currentDate.setDate(startDateObj.getDate() + i);
+      const dateKey = currentDate.toISOString().split('T')[0];
+      const dayName = currentDate.toLocaleDateString('en-US', { weekday: 'short' });
+      
+      dailyData[dateKey] = {
+        day: `${dayName} ${currentDate.getDate()}`,
+        date: dateKey,
+        calories: 0,
+        protein: 0,
+        carbs: 0,
+        fat: 0,
+        fiber: 0,
+        water: 0
+      };
+    }
+    
+    // Process meals data
+    meals.forEach(meal => {
+      const dateKey = meal.date.toISOString().split('T')[0];
+      if (dailyData[dateKey]) {
+        dailyData[dateKey].calories += meal.totalNutrition?.calories || 0;
+        dailyData[dateKey].protein += meal.totalNutrition?.protein || 0;
+        dailyData[dateKey].carbs += meal.totalNutrition?.carbs || 0;
+        dailyData[dateKey].fat += meal.totalNutrition?.fat || 0;
+        dailyData[dateKey].fiber += meal.totalNutrition?.fiber || 0;
+      }
+    });
+    
+    // Process water intake data
+    waterIntakes.forEach(intake => {
+      const dateKey = intake.date.toISOString().split('T')[0];
+      if (dailyData[dateKey]) {
+        dailyData[dateKey].water += intake.amount || 0;
+      }
+    });
+    
+    // Convert to array and ensure proper data types
+    const weeklyData = Object.values(dailyData).map(day => ({
+      ...day,
+      calories: Math.round(day.calories),
+      protein: Math.round(day.protein * 10) / 10, // Keep 1 decimal place
+      carbs: Math.round(day.carbs * 10) / 10,
+      fat: Math.round(day.fat * 10) / 10,
+      fiber: Math.round(day.fiber * 10) / 10
+    }));
+    
+    // Sort by date
+    weeklyData.sort((a, b) => new Date(a.date) - new Date(b.date));
+    
+    res.json({
+      success: true,
+      data: {
+        dailyData: weeklyData,
+        startDate: startDateObj.toISOString().split('T')[0],
+        endDate: endDate.toISOString().split('T')[0],
+        summary: {
+          totalCalories: weeklyData.reduce((sum, day) => sum + day.calories, 0),
+          averageCalories: Math.round(weeklyData.reduce((sum, day) => sum + day.calories, 0) / weeklyData.length),
+          daysTracked: weeklyData.filter(day => day.calories > 0).length
+        }
+      }
+    });
+    
+  } catch (error) {
+    console.error('Weekly calories report error:', error);
+    standardErrorResponse(res, 500, 'Failed to generate weekly calories report', error.message);
+  }
+});
 // Add this route to calculate daily totals
 app.get('/api/daily-totals', authenticate, async (req, res) => {
   try {
