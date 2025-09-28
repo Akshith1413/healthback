@@ -403,32 +403,122 @@ const WeightTrackingSchema = new mongoose.Schema({
 const WeightTracking = mongoose.model('WeightTracking', WeightTrackingSchema);
 
 // Meal Plan Template Schema
+// Meal Plan Template Schema
 const MealPlanTemplateSchema = new mongoose.Schema({
-  userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
   name: { type: String, required: true },
   description: { type: String },
+  dailyCalories: { type: Number, required: true },
+  protein: { type: Number, required: true },
+  carbs: { type: Number },
+  fat: { type: Number },
   meals: [{
-    day: { type: String, enum: ['monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday'] },
-    mealType: { type: String, enum: ['breakfast', 'lunch', 'dinner', 'snack'] },
+    day: { 
+      type: String, 
+      enum: ['monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday'],
+      required: true 
+    },
+    mealType: { 
+      type: String, 
+      enum: ['breakfast', 'lunch', 'dinner'],
+      required: true 
+    },
+    name: { type: String, required: true },
     items: [{
-      foodItem: { type: mongoose.Schema.Types.ObjectId, ref: 'FoodItem' },
-      recipe: { type: mongoose.Schema.Types.ObjectId, ref: 'Recipe' },
-      quantity: { type: Number },
-      unit: { type: String }
+      name: { type: String, required: true },
+      quantity: { type: String },
+      nutrition: {
+        calories: { type: Number, default: 0 },
+        protein: { type: Number, default: 0 },
+        carbs: { type: Number, default: 0 },
+        fat: { type: Number, default: 0 }
+      }
     }]
   }],
-  isPublic: { type: Boolean, default: false },
+  isPublic: { type: Boolean, default: true },
+  createdAt: { type: Date, default: Date.now }
+});
+
+const MealPlanTemplate = mongoose.model('MealPlanTemplate', MealPlanTemplateSchema);
+// Weekly Meal Plan Schema
+const WeeklyMealPlanSchema = new mongoose.Schema({
+  userId: { 
+    type: mongoose.Schema.Types.ObjectId, 
+    ref: 'User', 
+    required: true 
+  },
+  weekStartDate: { type: Date, required: true },
+  weekEndDate: { type: Date, required: true },
+  days: [{
+    day: { 
+      type: String, 
+      enum: ['monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday'],
+      required: true 
+    },
+    date: { type: Date, required: true },
+    meals: [{
+      mealType: { 
+        type: String, 
+        enum: ['breakfast', 'lunch', 'dinner'],
+        required: true 
+      },
+      name: { type: String },
+      items: [{
+        name: { type: String },
+        quantity: { type: String },
+        nutrition: {
+          calories: { type: Number, default: 0 },
+          protein: { type: Number, default: 0 },
+          carbs: { type: Number, default: 0 },
+          fat: { type: Number, default: 0 }
+        }
+      }],
+      totalNutrition: {
+        calories: { type: Number, default: 0 },
+        protein: { type: Number, default: 0 },
+        carbs: { type: Number, default: 0 },
+        fat: { type: Number, default: 0 }
+      }
+    }]
+  }],
+  totalNutrition: {
+    calories: { type: Number, default: 0 },
+    protein: { type: Number, default: 0 },
+    carbs: { type: Number, default: 0 },
+    fat: { type: Number, default: 0 }
+  },
   createdAt: { type: Date, default: Date.now },
   updatedAt: { type: Date, default: Date.now }
 });
 
-MealPlanTemplateSchema.pre('save', function(next) {
+WeeklyMealPlanSchema.pre('save', function(next) {
   this.updatedAt = Date.now();
+  
+  // Calculate nutrition totals
+  let totalCalories = 0;
+  let totalProtein = 0;
+  let totalCarbs = 0;
+  let totalFat = 0;
+  
+  this.days.forEach(day => {
+    day.meals.forEach(meal => {
+      totalCalories += meal.totalNutrition.calories || 0;
+      totalProtein += meal.totalNutrition.protein || 0;
+      totalCarbs += meal.totalNutrition.carbs || 0;
+      totalFat += meal.totalNutrition.fat || 0;
+    });
+  });
+  
+  this.totalNutrition = {
+    calories: Math.round(totalCalories),
+    protein: Math.round(totalProtein * 100) / 100,
+    carbs: Math.round(totalCarbs * 100) / 100,
+    fat: Math.round(totalFat * 100) / 100
+  };
+  
   next();
 });
 
-const MealPlanTemplate = mongoose.model('MealPlanTemplate', MealPlanTemplateSchema);
-
+const WeeklyMealPlan = mongoose.model('WeeklyMealPlan', WeeklyMealPlanSchema);
 
 // Appointment Schema
 const AppointmentSchema = new mongoose.Schema({
@@ -2420,16 +2510,355 @@ app.post('/api/weight-tracking', authenticate, async (req, res) => {
   }
 });
 
-// Meal Plan Templates Routes
 app.get('/api/meal-plan-templates', authenticate, async (req, res) => {
   try {
-    const templates = await MealPlanTemplate.find({
-      $or: [{ userId: req.user._id }, { isPublic: true }]
-    }).populate('meals.items.foodItem').populate('meals.items.recipe');
-    
-    res.json(templates);
+    const templates = await MealPlanTemplate.find({ isPublic: true });
+    res.json({
+      success: true,
+      data: templates
+    });
   } catch (error) {
-    res.status(500).json({ message: 'Server error' });
+    console.error('Get meal plan templates error:', error);
+    res.status(500).json({ 
+      success: false, 
+      message: 'Failed to retrieve meal plan templates' 
+    });
+  }
+});
+
+// GET /api/weekly-meal-plans - Get weekly meal plan for current week
+app.get('/api/weekly-meal-plans', authenticate, async (req, res) => {
+  try {
+    const { weekStartDate } = req.query;
+    
+    // Calculate week start (Monday) and end (Sunday)
+    let startDate;
+    if (weekStartDate) {
+      startDate = new Date(weekStartDate);
+    } else {
+      startDate = new Date();
+      // Get Monday of current week
+      const day = startDate.getDay();
+      const diff = startDate.getDate() - day + (day === 0 ? -6 : 1);
+      startDate.setDate(diff);
+    }
+    
+    startDate.setHours(0, 0, 0, 0);
+    const endDate = new Date(startDate);
+    endDate.setDate(startDate.getDate() + 6);
+    endDate.setHours(23, 59, 59, 999);
+
+    // Find existing meal plan for this week
+    let mealPlan = await WeeklyMealPlan.findOne({
+      userId: req.user._id,
+      weekStartDate: { $gte: startDate, $lte: endDate }
+    });
+
+    // If no meal plan exists, create an empty one
+    if (!mealPlan) {
+      const days = [];
+      const dayNames = ['monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday'];
+      
+      for (let i = 0; i < 7; i++) {
+        const currentDate = new Date(startDate);
+        currentDate.setDate(startDate.getDate() + i);
+        
+        days.push({
+          day: dayNames[i],
+          date: currentDate,
+          meals: [
+            { mealType: 'breakfast', name: '', items: [], totalNutrition: { calories: 0, protein: 0, carbs: 0, fat: 0 } },
+            { mealType: 'lunch', name: '', items: [], totalNutrition: { calories: 0, protein: 0, carbs: 0, fat: 0 } },
+            { mealType: 'dinner', name: '', items: [], totalNutrition: { calories: 0, protein: 0, carbs: 0, fat: 0 } }
+          ]
+        });
+      }
+
+      mealPlan = new WeeklyMealPlan({
+        userId: req.user._id,
+        weekStartDate: startDate,
+        weekEndDate: endDate,
+        days: days
+      });
+      
+      await mealPlan.save();
+    }
+
+    res.json({
+      success: true,
+      data: mealPlan
+    });
+  } catch (error) {
+    console.error('Get weekly meal plan error:', error);
+    res.status(500).json({ 
+      success: false, 
+      message: 'Failed to retrieve weekly meal plan' 
+    });
+  }
+});
+app.put('/api/weekly-meal-plans/:day/:mealType', authenticate, async (req, res) => {
+  try {
+    const { day, mealType } = req.params;
+    const { name, items } = req.body;
+
+    // Calculate nutrition totals
+    let totalCalories = 0;
+    let totalProtein = 0;
+    let totalCarbs = 0;
+    let totalFat = 0;
+
+    if (items && items.length > 0) {
+      items.forEach(item => {
+        totalCalories += item.nutrition?.calories || 0;
+        totalProtein += item.nutrition?.protein || 0;
+        totalCarbs += item.nutrition?.carbs || 0;
+        totalFat += item.nutrition?.fat || 0;
+      });
+    }
+
+    const totalNutrition = {
+      calories: Math.round(totalCalories),
+      protein: Math.round(totalProtein * 100) / 100,
+      carbs: Math.round(totalCarbs * 100) / 100,
+      fat: Math.round(totalFat * 100) / 100
+    };
+
+    // Find current week's meal plan
+    const startDate = new Date();
+    const dayOfWeek = startDate.getDay();
+    const diff = startDate.getDate() - dayOfWeek + (dayOfWeek === 0 ? -6 : 1);
+    startDate.setDate(diff);
+    startDate.setHours(0, 0, 0, 0);
+    
+    const endDate = new Date(startDate);
+    endDate.setDate(startDate.getDate() + 6);
+    endDate.setHours(23, 59, 59, 999);
+
+    let mealPlan = await WeeklyMealPlan.findOne({
+      userId: req.user._id,
+      weekStartDate: { $gte: startDate, $lte: endDate }
+    });
+
+    if (!mealPlan) {
+      return res.status(404).json({
+        success: false,
+        message: 'Meal plan not found for this week'
+      });
+    }
+
+    // Update the specific meal
+    const dayIndex = mealPlan.days.findIndex(d => d.day === day.toLowerCase());
+    if (dayIndex === -1) {
+      return res.status(404).json({
+        success: false,
+        message: 'Day not found'
+      });
+    }
+
+    const mealIndex = mealPlan.days[dayIndex].meals.findIndex(m => m.mealType === mealType.toLowerCase());
+    if (mealIndex === -1) {
+      return res.status(404).json({
+        success: false,
+        message: 'Meal type not found'
+      });
+    }
+
+    mealPlan.days[dayIndex].meals[mealIndex] = {
+      mealType: mealType.toLowerCase(),
+      name: name || '',
+      items: items || [],
+      totalNutrition
+    };
+
+    mealPlan.markModified('days');
+    await mealPlan.save();
+
+    res.json({
+      success: true,
+      message: 'Meal updated successfully',
+      data: mealPlan
+    });
+  } catch (error) {
+    console.error('Update meal error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to update meal'
+    });
+  }
+});
+
+// POST /api/weekly-meal-plans/generate-from-template - Generate meal plan from template
+app.post('/api/weekly-meal-plans/generate-from-template', authenticate, async (req, res) => {
+  try {
+    const { templateId } = req.body;
+
+    const template = await MealPlanTemplate.findById(templateId);
+    if (!template) {
+      return res.status(404).json({
+        success: false,
+        message: 'Template not found'
+      });
+    }
+
+    // Calculate week dates
+    const startDate = new Date();
+    const dayOfWeek = startDate.getDay();
+    const diff = startDate.getDate() - dayOfWeek + (dayOfWeek === 0 ? -6 : 1);
+    startDate.setDate(diff);
+    startDate.setHours(0, 0, 0, 0);
+    
+    const endDate = new Date(startDate);
+    endDate.setDate(startDate.getDate() + 6);
+    endDate.setHours(23, 59, 59, 999);
+
+    // Create days array with template meals
+    const days = [];
+    const dayNames = ['monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday'];
+    
+    for (let i = 0; i < 7; i++) {
+      const currentDate = new Date(startDate);
+      currentDate.setDate(startDate.getDate() + i);
+      const dayName = dayNames[i];
+      
+      // Get template meals for this day
+      const templateMeals = template.meals.filter(meal => meal.day === dayName);
+      
+      const meals = [
+        { mealType: 'breakfast', name: '', items: [], totalNutrition: { calories: 0, protein: 0, carbs: 0, fat: 0 } },
+        { mealType: 'lunch', name: '', items: [], totalNutrition: { calories: 0, protein: 0, carbs: 0, fat: 0 } },
+        { mealType: 'dinner', name: '', items: [], totalNutrition: { calories: 0, protein: 0, carbs: 0, fat: 0 } }
+      ];
+
+      // Apply template meals
+      templateMeals.forEach(templateMeal => {
+        const mealIndex = meals.findIndex(m => m.mealType === templateMeal.mealType);
+        if (mealIndex !== -1) {
+          meals[mealIndex] = {
+            mealType: templateMeal.mealType,
+            name: templateMeal.name,
+            items: templateMeal.items,
+            totalNutrition: {
+              calories: Math.round(templateMeal.items.reduce((sum, item) => sum + (item.nutrition?.calories || 0), 0)),
+              protein: Math.round(templateMeal.items.reduce((sum, item) => sum + (item.nutrition?.protein || 0), 0) * 100) / 100,
+              carbs: Math.round(templateMeal.items.reduce((sum, item) => sum + (item.nutrition?.carbs || 0), 0) * 100) / 100,
+              fat: Math.round(templateMeal.items.reduce((sum, item) => sum + (item.nutrition?.fat || 0), 0) * 100) / 100
+            }
+          };
+        }
+      });
+
+      days.push({
+        day: dayName,
+        date: currentDate,
+        meals
+      });
+    }
+
+    // Find and update existing meal plan or create new one
+    let mealPlan = await WeeklyMealPlan.findOne({
+      userId: req.user._id,
+      weekStartDate: { $gte: startDate, $lte: endDate }
+    });
+
+    if (mealPlan) {
+      mealPlan.days = days;
+      mealPlan.markModified('days');
+    } else {
+      mealPlan = new WeeklyMealPlan({
+        userId: req.user._id,
+        weekStartDate: startDate,
+        weekEndDate: endDate,
+        days
+      });
+    }
+
+    await mealPlan.save();
+
+    res.json({
+      success: true,
+      message: 'Meal plan generated from template successfully',
+      data: mealPlan
+    });
+  } catch (error) {
+    console.error('Generate meal plan from template error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to generate meal plan from template'
+    });
+  }
+});
+
+// Seed some default templates
+app.post('/api/meal-plan-templates/seed', authenticate, async (req, res) => {
+  try {
+    const templates = [
+      {
+        name: 'High Protein Plan',
+        description: 'High protein diet for muscle building',
+        dailyCalories: 2200,
+        protein: 180,
+        carbs: 200,
+        fat: 60,
+        meals: [
+          {
+            day: 'monday',
+            mealType: 'breakfast',
+            name: 'Protein Power Bowl',
+            items: [
+              { name: 'Greek Yogurt', quantity: '1 cup', nutrition: { calories: 150, protein: 25, carbs: 8, fat: 4 } },
+              { name: 'Protein Powder', quantity: '1 scoop', nutrition: { calories: 120, protein: 24, carbs: 3, fat: 1 } },
+              { name: 'Berries', quantity: '1/2 cup', nutrition: { calories: 40, protein: 0, carbs: 10, fat: 0 } }
+            ]
+          }
+        ],
+        isPublic: true
+      },
+      {
+        name: 'Balanced Diet',
+        description: 'Well-balanced meal plan for maintenance',
+        dailyCalories: 2000,
+        protein: 150,
+        carbs: 250,
+        fat: 67,
+        meals: [
+          {
+            day: 'tuesday',
+            mealType: 'lunch',
+            name: 'Salmon Avocado Bowl',
+            items: [
+              { name: 'Salmon', quantity: '150g', nutrition: { calories: 280, protein: 25, carbs: 0, fat: 18 } },
+              { name: 'Avocado', quantity: '1/2', nutrition: { calories: 160, protein: 2, carbs: 8, fat: 15 } },
+              { name: 'Brown Rice', quantity: '1 cup', nutrition: { calories: 215, protein: 5, carbs: 45, fat: 2 } }
+            ]
+          }
+        ],
+        isPublic: true
+      },
+      {
+        name: 'Low Carb Plan',
+        description: 'Low carbohydrate diet for weight loss',
+        dailyCalories: 1800,
+        protein: 160,
+        carbs: 100,
+        fat: 80,
+        meals: [],
+        isPublic: true
+      }
+    ];
+
+    await MealPlanTemplate.deleteMany({ isPublic: true });
+    await MealPlanTemplate.insertMany(templates);
+
+    res.json({
+      success: true,
+      message: 'Default templates seeded successfully'
+    });
+  } catch (error) {
+    console.error('Seed templates error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to seed templates'
+    });
   }
 });
 
