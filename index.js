@@ -930,7 +930,451 @@ app.patch('/api/appointments/reminders/:id/mark-missed', authenticate, async (re
     });
   }
 });
+// Enhanced Reports API Routes
 
+// GET /api/reports/comprehensive - Comprehensive report with all data
+app.get('/api/reports/comprehensive', authenticate, async (req, res) => {
+  try {
+    const { period = '7' } = req.query; // 7, 14, 30 days
+    const userId = req.user._id;
+    const days = parseInt(period);
+    
+    // Calculate date range
+    const endDate = new Date();
+    const startDate = new Date();
+    startDate.setDate(endDate.getDate() - days + 1);
+    
+    startDate.setHours(0, 0, 0, 0);
+    endDate.setHours(23, 59, 59, 999);
+    
+    console.log(`Generating comprehensive report for ${days} days:`, {
+      startDate: startDate.toISOString(),
+      endDate: endDate.toISOString()
+    });
+
+    // Get meals data
+    const meals = await Meal.find({
+      userId: userId,
+      date: { $gte: startDate, $lte: endDate }
+    })
+    .populate('items.foodItem')
+    .populate('items.recipe')
+    .lean();
+
+    // Get water intake data
+    const waterIntakes = await WaterIntake.find({
+      userId: userId,
+      date: { $gte: startDate, $lte: endDate }
+    }).lean();
+
+    // Get nutritional goals
+    const goals = await NutritionalGoals.findOne({ userId: userId }) || {
+      dailyCalories: 2000,
+      protein: 150,
+      carbs: 250,
+      fat: 67,
+      fiber: 25,
+      water: 2000
+    };
+
+    // Process daily data
+    const dailyData = {};
+    const dailyTotals = {
+      calories: 0,
+      protein: 0,
+      carbs: 0,
+      fat: 0,
+      fiber: 0,
+      water: 0
+    };
+
+    // Initialize all days in range
+    for (let i = 0; i < days; i++) {
+      const currentDate = new Date(startDate);
+      currentDate.setDate(startDate.getDate() + i);
+      const dateKey = currentDate.toISOString().split('T')[0];
+      const dayName = currentDate.toLocaleDateString('en-US', { weekday: 'short' });
+      
+      dailyData[dateKey] = {
+        day: `${dayName} ${currentDate.getDate()}`,
+        date: dateKey,
+        calories: 0,
+        protein: 0,
+        carbs: 0,
+        fat: 0,
+        fiber: 0,
+        water: 0,
+        meals: []
+      };
+    }
+
+    // Process meals
+    meals.forEach(meal => {
+      const dateKey = meal.date.toISOString().split('T')[0];
+      if (dailyData[dateKey]) {
+        let mealCalories = 0;
+        let mealProtein = 0;
+        let mealCarbs = 0;
+        let mealFat = 0;
+        let mealFiber = 0;
+
+        // Calculate nutrition from meal
+        if (meal.totalNutrition && meal.totalNutrition.calories > 0) {
+          mealCalories = meal.totalNutrition.calories || 0;
+          mealProtein = meal.totalNutrition.protein || 0;
+          mealCarbs = meal.totalNutrition.carbs || 0;
+          mealFat = meal.totalNutrition.fat || 0;
+          mealFiber = meal.totalNutrition.fiber || 0;
+        } else if (meal.items && meal.items.length > 0) {
+          meal.items.forEach(item => {
+            let itemNutrition = {};
+            
+            if (item.foodItem) {
+              itemNutrition = {
+                calories: item.foodItem.calories || 0,
+                protein: item.foodItem.protein || 0,
+                carbs: item.foodItem.carbs || 0,
+                fat: item.foodItem.fat || 0,
+                fiber: item.foodItem.fiber || 0
+              };
+            } else if (item.recipe && item.recipe.nutrition) {
+              itemNutrition = {
+                calories: item.recipe.nutrition.calories || 0,
+                protein: item.recipe.nutrition.protein || 0,
+                carbs: item.recipe.nutrition.carbs || 0,
+                fat: item.recipe.nutrition.fat || 0,
+                fiber: item.recipe.nutrition.fiber || 0
+              };
+            }
+            
+            const quantity = item.quantity || 1;
+            mealCalories += (itemNutrition.calories || 0) * quantity;
+            mealProtein += (itemNutrition.protein || 0) * quantity;
+            mealCarbs += (itemNutrition.carbs || 0) * quantity;
+            mealFat += (itemNutrition.fat || 0) * quantity;
+            mealFiber += (itemNutrition.fiber || 0) * quantity;
+          });
+        }
+
+        // Add to daily totals
+        dailyData[dateKey].calories += Math.round(mealCalories);
+        dailyData[dateKey].protein += Math.round(mealProtein * 100) / 100;
+        dailyData[dateKey].carbs += Math.round(mealCarbs * 100) / 100;
+        dailyData[dateKey].fat += Math.round(mealFat * 100) / 100;
+        dailyData[dateKey].fiber += Math.round(mealFiber * 100) / 100;
+        
+        // Track meal type for breakdown
+        dailyData[dateKey].meals.push({
+          type: meal.type,
+          calories: Math.round(mealCalories)
+        });
+      }
+    });
+
+    // Process water intake
+    waterIntakes.forEach(intake => {
+      const dateKey = intake.date.toISOString().split('T')[0];
+      if (dailyData[dateKey]) {
+        dailyData[dateKey].water += intake.amount || 0;
+      }
+    });
+
+    // Convert to array and calculate overall totals
+    const weeklyData = Object.values(dailyData).map(day => {
+      dailyTotals.calories += day.calories;
+      dailyTotals.protein += day.protein;
+      dailyTotals.carbs += day.carbs;
+      dailyTotals.fat += day.fat;
+      dailyTotals.fiber += day.fiber;
+      dailyTotals.water += day.water;
+      
+      return {
+        ...day,
+        calories: Math.round(day.calories),
+        protein: Math.round(day.protein * 10) / 10,
+        carbs: Math.round(day.carbs * 10) / 10,
+        fat: Math.round(day.fat * 10) / 10,
+        fiber: Math.round(day.fiber * 10) / 10
+      };
+    });
+
+    // Sort by date
+    weeklyData.sort((a, b) => new Date(a.date) - new Date(b.date));
+
+    // Calculate meal type breakdown for the period
+    const mealTypeBreakdown = {};
+    weeklyData.forEach(day => {
+      day.meals.forEach(meal => {
+        if (!mealTypeBreakdown[meal.type]) {
+          mealTypeBreakdown[meal.type] = 0;
+        }
+        mealTypeBreakdown[meal.type] += meal.calories;
+      });
+    });
+
+    // Calculate statistics
+    const totalDays = weeklyData.length;
+    const daysWithData = weeklyData.filter(day => day.calories > 0).length;
+    const averageCalories = Math.round(dailyTotals.calories / totalDays);
+    const averageProtein = Math.round(dailyTotals.protein / totalDays);
+    const averageCarbs = Math.round(dailyTotals.carbs / totalDays);
+    const averageFat = Math.round(dailyTotals.fat / totalDays);
+    const averageWater = Math.round(dailyTotals.water / totalDays);
+
+    // Goal achievement rates
+    const calorieGoalRate = Math.min(100, (dailyTotals.calories / (goals.dailyCalories * totalDays)) * 100);
+    const proteinGoalRate = Math.min(100, (dailyTotals.protein / (goals.protein * totalDays)) * 100);
+    const carbsGoalRate = Math.min(100, (dailyTotals.carbs / (goals.carbs * totalDays)) * 100);
+    const fatGoalRate = Math.min(100, (dailyTotals.fat / (goals.fat * totalDays)) * 100);
+    const waterGoalRate = Math.min(100, (dailyTotals.water / (goals.water * totalDays)) * 100);
+
+    res.json({
+      success: true,
+      data: {
+        period: `${days} days`,
+        startDate: startDate.toISOString().split('T')[0],
+        endDate: endDate.toISOString().split('T')[0],
+        dailyData: weeklyData,
+        summary: {
+          totalCalories: Math.round(dailyTotals.calories),
+          totalProtein: Math.round(dailyTotals.protein),
+          totalCarbs: Math.round(dailyTotals.carbs),
+          totalFat: Math.round(dailyTotals.fat),
+          totalWater: Math.round(dailyTotals.water),
+          averageCalories,
+          averageProtein,
+          averageCarbs,
+          averageFat,
+          averageWater,
+          daysTracked: daysWithData,
+          totalDays: totalDays,
+          trackingRate: Math.round((daysWithData / totalDays) * 100)
+        },
+        goals: goals,
+        goalAchievement: {
+          calories: Math.round(calorieGoalRate),
+          protein: Math.round(proteinGoalRate),
+          carbs: Math.round(carbsGoalRate),
+          fat: Math.round(fatGoalRate),
+          water: Math.round(waterGoalRate)
+        },
+        mealTypeBreakdown,
+        statistics: {
+          bestDay: weeklyData.reduce((max, day) => day.calories > max.calories ? day : max, weeklyData[0]),
+          worstDay: weeklyData.reduce((min, day) => day.calories < min.calories ? day : min, weeklyData[0]),
+          consistency: Math.round((daysWithData / totalDays) * 100)
+        }
+      }
+    });
+
+  } catch (error) {
+    console.error('Comprehensive report error:', error);
+    standardErrorResponse(res, 500, 'Failed to generate comprehensive report', error.message);
+  }
+});
+
+// GET /api/reports/export - Export report data
+app.get('/api/reports/export', authenticate, async (req, res) => {
+  try {
+    const { type, format = 'json', period = '7' } = req.query;
+    const userId = req.user._id;
+    
+    // Generate the comprehensive report
+    const reportResponse = await generateComprehensiveReport(userId, period);
+    
+    if (format === 'csv') {
+      // Convert to CSV format
+      const csvData = convertReportToCSV(reportResponse.data);
+      res.setHeader('Content-Type', 'text/csv');
+      res.setHeader('Content-Disposition', `attachment; filename=nutrition-report-${period}days.csv`);
+      return res.send(csvData);
+    } else if (format === 'json') {
+      res.setHeader('Content-Type', 'application/json');
+      res.setHeader('Content-Disposition', `attachment; filename=nutrition-report-${period}days.json`);
+      return res.json(reportResponse);
+    } else {
+      return standardErrorResponse(res, 400, 'Unsupported export format');
+    }
+  } catch (error) {
+    console.error('Export report error:', error);
+    standardErrorResponse(res, 500, 'Failed to export report', error.message);
+  }
+});
+
+// Helper function to generate comprehensive report
+async function generateComprehensiveReport(userId, period = '7') {
+  const days = parseInt(period);
+  const endDate = new Date();
+  const startDate = new Date();
+  startDate.setDate(endDate.getDate() - days + 1);
+  
+  startDate.setHours(0, 0, 0, 0);
+  endDate.setHours(23, 59, 59, 999);
+
+  // Get meals data
+  const meals = await Meal.find({
+    userId: userId,
+    date: { $gte: startDate, $lte: endDate }
+  })
+  .populate('items.foodItem')
+  .populate('items.recipe')
+  .lean();
+
+  // Get water intake data
+  const waterIntakes = await WaterIntake.find({
+    userId: userId,
+    date: { $gte: startDate, $lte: endDate }
+  }).lean();
+
+  // Get nutritional goals
+  const goals = await NutritionalGoals.findOne({ userId: userId }) || {
+    dailyCalories: 2000,
+    protein: 150,
+    carbs: 250,
+    fat: 67,
+    fiber: 25,
+    water: 2000
+  };
+
+  // Process data (similar to comprehensive report route)
+  const dailyData = {};
+  const dailyTotals = { calories: 0, protein: 0, carbs: 0, fat: 0, fiber: 0, water: 0 };
+
+  // Initialize all days
+  for (let i = 0; i < days; i++) {
+    const currentDate = new Date(startDate);
+    currentDate.setDate(startDate.getDate() + i);
+    const dateKey = currentDate.toISOString().split('T')[0];
+    const dayName = currentDate.toLocaleDateString('en-US', { weekday: 'short' });
+    
+    dailyData[dateKey] = {
+      day: `${dayName} ${currentDate.getDate()}`,
+      date: dateKey,
+      calories: 0,
+      protein: 0,
+      carbs: 0,
+      fat: 0,
+      fiber: 0,
+      water: 0
+    };
+  }
+
+  // Process meals
+  meals.forEach(meal => {
+    const dateKey = meal.date.toISOString().split('T')[0];
+    if (dailyData[dateKey]) {
+      let mealCalories = 0;
+      let mealProtein = 0;
+      let mealCarbs = 0;
+      let mealFat = 0;
+      let mealFiber = 0;
+
+      if (meal.totalNutrition && meal.totalNutrition.calories > 0) {
+        mealCalories = meal.totalNutrition.calories || 0;
+        mealProtein = meal.totalNutrition.protein || 0;
+        mealCarbs = meal.totalNutrition.carbs || 0;
+        mealFat = meal.totalNutrition.fat || 0;
+        mealFiber = meal.totalNutrition.fiber || 0;
+      } else if (meal.items && meal.items.length > 0) {
+        meal.items.forEach(item => {
+          let itemNutrition = {};
+          
+          if (item.foodItem) {
+            itemNutrition = {
+              calories: item.foodItem.calories || 0,
+              protein: item.foodItem.protein || 0,
+              carbs: item.foodItem.carbs || 0,
+              fat: item.foodItem.fat || 0,
+              fiber: item.foodItem.fiber || 0
+            };
+          } else if (item.recipe && item.recipe.nutrition) {
+            itemNutrition = {
+              calories: item.recipe.nutrition.calories || 0,
+              protein: item.recipe.nutrition.protein || 0,
+              carbs: item.recipe.nutrition.carbs || 0,
+              fat: item.recipe.nutrition.fat || 0,
+              fiber: item.recipe.nutrition.fiber || 0
+            };
+          }
+          
+          const quantity = item.quantity || 1;
+          mealCalories += (itemNutrition.calories || 0) * quantity;
+          mealProtein += (itemNutrition.protein || 0) * quantity;
+          mealCarbs += (itemNutrition.carbs || 0) * quantity;
+          mealFat += (itemNutrition.fat || 0) * quantity;
+          mealFiber += (itemNutrition.fiber || 0) * quantity;
+        });
+      }
+
+      dailyData[dateKey].calories += Math.round(mealCalories);
+      dailyData[dateKey].protein += Math.round(mealProtein * 100) / 100;
+      dailyData[dateKey].carbs += Math.round(mealCarbs * 100) / 100;
+      dailyData[dateKey].fat += Math.round(mealFat * 100) / 100;
+      dailyData[dateKey].fiber += Math.round(mealFiber * 100) / 100;
+    }
+  });
+
+  // Process water intake
+  waterIntakes.forEach(intake => {
+    const dateKey = intake.date.toISOString().split('T')[0];
+    if (dailyData[dateKey]) {
+      dailyData[dateKey].water += intake.amount || 0;
+    }
+  });
+
+  // Convert to array
+  const weeklyData = Object.values(dailyData).map(day => {
+    dailyTotals.calories += day.calories;
+    dailyTotals.protein += day.protein;
+    dailyTotals.carbs += day.carbs;
+    dailyTotals.fat += day.fat;
+    dailyTotals.fiber += day.fiber;
+    dailyTotals.water += day.water;
+    
+    return {
+      ...day,
+      calories: Math.round(day.calories),
+      protein: Math.round(day.protein * 10) / 10,
+      carbs: Math.round(day.carbs * 10) / 10,
+      fat: Math.round(day.fat * 10) / 10,
+      fiber: Math.round(day.fiber * 10) / 10
+    };
+  });
+
+  weeklyData.sort((a, b) => new Date(a.date) - new Date(b.date));
+
+  return {
+    success: true,
+    data: {
+      period: `${days} days`,
+      dailyData: weeklyData,
+      totals: dailyTotals,
+      goals: goals
+    }
+  };
+}
+
+// Helper function to convert report to CSV
+function convertReportToCSV(reportData) {
+  const headers = ['Date', 'Day', 'Calories', 'Protein (g)', 'Carbs (g)', 'Fat (g)', 'Fiber (g)', 'Water (ml)'];
+  const rows = reportData.dailyData.map(day => [
+    day.date,
+    day.day,
+    day.calories,
+    day.protein,
+    day.carbs,
+    day.fat,
+    day.fiber,
+    day.water
+  ]);
+
+  const csvContent = [
+    headers.join(','),
+    ...rows.map(row => row.join(','))
+  ].join('\n');
+
+  return csvContent;
+}
 // DELETE /api/appointments/reminders/:id - Delete reminder (soft delete)
 app.delete('/api/appointments/reminders/:id', authenticate, async (req, res) => {
   try {
