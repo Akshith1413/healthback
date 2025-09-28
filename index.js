@@ -42,7 +42,164 @@ const FoodItemSchema = new mongoose.Schema({
 });
 
 const FoodItem = mongoose.model('FoodItem', FoodItemSchema);
+// Meal Plan Schema
+const MealPlanSchema = new mongoose.Schema({
+  userId: { 
+    type: mongoose.Schema.Types.ObjectId, 
+    ref: 'User', 
+    required: true 
+  },
+  name: { 
+    type: String, 
+    required: true 
+  },
+  description: { 
+    type: String 
+  },
+  startDate: { 
+    type: Date, 
+    required: true 
+  },
+  endDate: { 
+    type: Date, 
+    required: true 
+  },
+  days: [{
+    day: { 
+      type: String, 
+      enum: ['monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday'],
+      required: true 
+    },
+    date: { 
+      type: Date, 
+      required: true 
+    },
+    meals: [{
+      mealType: { 
+        type: String, 
+        enum: ['breakfast', 'lunch', 'dinner', 'snack'],
+        required: true 
+      },
+      items: [{
+        foodItem: { type: mongoose.Schema.Types.ObjectId, ref: 'FoodItem' },
+        recipe: { type: mongoose.Schema.Types.ObjectId, ref: 'Recipe' },
+        name: { type: String },
+        quantity: { type: Number, default: 1 },
+        unit: { type: String, default: 'serving' },
+        nutrition: {
+          calories: { type: Number, default: 0 },
+          protein: { type: Number, default: 0 },
+          carbs: { type: Number, default: 0 },
+          fat: { type: Number, default: 0 },
+          fiber: { type: Number, default: 0 }
+        }
+      }],
+      totalNutrition: {
+        calories: { type: Number, default: 0 },
+        protein: { type: Number, default: 0 },
+        carbs: { type: Number, default: 0 },
+        fat: { type: Number, default: 0 },
+        fiber: { type: Number, default: 0 }
+      }
+    }]
+  }],
+  totalNutrition: {
+    calories: { type: Number, default: 0 },
+    protein: { type: Number, default: 0 },
+    carbs: { type: Number, default: 0 },
+    fat: { type: Number, default: 0 },
+    fiber: { type: Number, default: 0 }
+  },
+  isActive: { 
+    type: Boolean, 
+    default: true 
+  },
+  createdAt: { 
+    type: Date, 
+    default: Date.now 
+  },
+  updatedAt: { 
+    type: Date, 
+    default: Date.now 
+  }
+});
 
+MealPlanSchema.pre('save', function(next) {
+  this.updatedAt = Date.now();
+  
+  // Calculate nutrition totals
+  if (this.isModified('days')) {
+    let totalCalories = 0;
+    let totalProtein = 0;
+    let totalCarbs = 0;
+    let totalFat = 0;
+    let totalFiber = 0;
+    
+    this.days.forEach(day => {
+      day.meals.forEach(meal => {
+        totalCalories += meal.totalNutrition.calories || 0;
+        totalProtein += meal.totalNutrition.protein || 0;
+        totalCarbs += meal.totalNutrition.carbs || 0;
+        totalFat += meal.totalNutrition.fat || 0;
+        totalFiber += meal.totalNutrition.fiber || 0;
+      });
+    });
+    
+    this.totalNutrition = {
+      calories: Math.round(totalCalories),
+      protein: Math.round(totalProtein * 100) / 100,
+      carbs: Math.round(totalCarbs * 100) / 100,
+      fat: Math.round(totalFat * 100) / 100,
+      fiber: Math.round(totalFiber * 100) / 100
+    };
+  }
+  
+  next();
+});
+
+const MealPlan = mongoose.model('MealPlan', MealPlanSchema);
+
+// Shopping List Schema
+const ShoppingListSchema = new mongoose.Schema({
+  userId: { 
+    type: mongoose.Schema.Types.ObjectId, 
+    ref: 'User', 
+    required: true 
+  },
+  mealPlanId: { 
+    type: mongoose.Schema.Types.ObjectId, 
+    ref: 'MealPlan' 
+  },
+  name: { 
+    type: String, 
+    required: true 
+  },
+  items: [{
+    name: { type: String, required: true },
+    category: { 
+      type: String, 
+      enum: ['produce', 'protein', 'dairy', 'grains', 'pantry', 'frozen', 'other'],
+      default: 'other'
+    },
+    quantity: { type: Number, required: true },
+    unit: { type: String, required: true },
+    estimatedCost: { type: Number, default: 0 },
+    purchased: { type: Boolean, default: false },
+    notes: { type: String }
+  }],
+  totalEstimatedCost: { type: Number, default: 0 },
+  isActive: { type: Boolean, default: true },
+  createdAt: { type: Date, default: Date.now },
+  updatedAt: { type: Date, default: Date.now }
+});
+
+ShoppingListSchema.pre('save', function(next) {
+  this.updatedAt = Date.now();
+  this.totalEstimatedCost = this.items.reduce((total, item) => total + (item.estimatedCost || 0), 0);
+  next();
+});
+
+const ShoppingList = mongoose.model('ShoppingList', ShoppingListSchema);
 // Custom Recipe Schema
 // Recipe Schema
     const RecipeSchema = new mongoose.Schema({
@@ -2785,7 +2942,302 @@ app.get('/api/appointments/by-date/:date', authenticate, async (req, res) => {
     standardErrorResponse(res, 500, 'Failed to retrieve appointments', err.message);
   }
 });
+// Meal Plan Routes
+app.get('/api/meal-plans', authenticate, async (req, res) => {
+  try {
+    const { active } = req.query;
+    let query = { userId: req.user._id, isActive: true };
+    
+    if (active === 'true') {
+      const today = new Date();
+      today.setHours(0, 0, 0, 0);
+      query.endDate = { $gte: today };
+    }
+    
+    const mealPlans = await MealPlan.find(query)
+      .populate('days.meals.items.foodItem')
+      .populate('days.meals.items.recipe')
+      .sort({ startDate: -1 });
+    
+    res.json({
+      success: true,
+      data: mealPlans
+    });
+  } catch (error) {
+    console.error('Get meal plans error:', error);
+    standardErrorResponse(res, 500, 'Failed to retrieve meal plans', error.message);
+  }
+});
 
+app.get('/api/meal-plans/:id', authenticate, async (req, res) => {
+  try {
+    const mealPlan = await MealPlan.findOne({
+      _id: req.params.id,
+      userId: req.user._id,
+      isActive: true
+    })
+    .populate('days.meals.items.foodItem')
+    .populate('days.meals.items.recipe');
+    
+    if (!mealPlan) {
+      return standardErrorResponse(res, 404, 'Meal plan not found');
+    }
+    
+    res.json({
+      success: true,
+      data: mealPlan
+    });
+  } catch (error) {
+    console.error('Get meal plan error:', error);
+    standardErrorResponse(res, 500, 'Failed to retrieve meal plan', error.message);
+  }
+});
+
+app.post('/api/meal-plans', authenticate, async (req, res) => {
+  try {
+    const mealPlan = new MealPlan({
+      ...req.body,
+      userId: req.user._id
+    });
+    
+    await mealPlan.save();
+    await mealPlan.populate('days.meals.items.foodItem');
+    await mealPlan.populate('days.meals.items.recipe');
+    
+    res.status(201).json({
+      success: true,
+      message: 'Meal plan created successfully',
+      data: mealPlan
+    });
+  } catch (error) {
+    console.error('Create meal plan error:', error);
+    standardErrorResponse(res, 500, 'Failed to create meal plan', error.message);
+  }
+});
+
+app.put('/api/meal-plans/:id', authenticate, async (req, res) => {
+  try {
+    const mealPlan = await MealPlan.findOneAndUpdate(
+      {
+        _id: req.params.id,
+        userId: req.user._id,
+        isActive: true
+      },
+      req.body,
+      { new: true, runValidators: true }
+    )
+    .populate('days.meals.items.foodItem')
+    .populate('days.meals.items.recipe');
+    
+    if (!mealPlan) {
+      return standardErrorResponse(res, 404, 'Meal plan not found');
+    }
+    
+    res.json({
+      success: true,
+      message: 'Meal plan updated successfully',
+      data: mealPlan
+    });
+  } catch (error) {
+    console.error('Update meal plan error:', error);
+    standardErrorResponse(res, 500, 'Failed to update meal plan', error.message);
+  }
+});
+
+app.delete('/api/meal-plans/:id', authenticate, async (req, res) => {
+  try {
+    const mealPlan = await MealPlan.findOneAndUpdate(
+      {
+        _id: req.params.id,
+        userId: req.user._id,
+        isActive: true
+      },
+      { isActive: false },
+      { new: true }
+    );
+    
+    if (!mealPlan) {
+      return standardErrorResponse(res, 404, 'Meal plan not found');
+    }
+    
+    res.json({
+      success: true,
+      message: 'Meal plan deleted successfully'
+    });
+  } catch (error) {
+    console.error('Delete meal plan error:', error);
+    standardErrorResponse(res, 500, 'Failed to delete meal plan', error.message);
+  }
+});
+
+// Generate Meal Plan from Template
+app.post('/api/meal-plans/generate-from-template', authenticate, async (req, res) => {
+  try {
+    const { templateId, startDate, name } = req.body;
+    
+    // Get template (you can create template endpoints similarly)
+    const template = await MealPlanTemplate.findById(templateId)
+      .populate('meals.items.foodItem')
+      .populate('meals.items.recipe');
+    
+    if (!template) {
+      return standardErrorResponse(res, 404, 'Template not found');
+    }
+    
+    const start = new Date(startDate);
+    const end = new Date(start);
+    end.setDate(start.getDate() + 6); // 7-day plan
+    
+    // Create days array
+    const days = [];
+    const dayNames = ['monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday'];
+    
+    for (let i = 0; i < 7; i++) {
+      const currentDate = new Date(start);
+      currentDate.setDate(start.getDate() + i);
+      
+      const dayMeals = template.meals
+        .filter(meal => meal.day === dayNames[i])
+        .map(meal => ({
+          mealType: meal.mealType,
+          items: meal.items.map(item => ({
+            foodItem: item.foodItem?._id,
+            recipe: item.recipe?._id,
+            name: item.foodItem?.name || item.recipe?.name || 'Custom Item',
+            quantity: item.quantity || 1,
+            unit: item.unit || 'serving',
+            nutrition: {
+              calories: item.foodItem?.calories || item.recipe?.nutrition?.calories || 0,
+              protein: item.foodItem?.protein || item.recipe?.nutrition?.protein || 0,
+              carbs: item.foodItem?.carbs || item.recipe?.nutrition?.carbs || 0,
+              fat: item.foodItem?.fat || item.recipe?.nutrition?.fat || 0,
+              fiber: item.foodItem?.fiber || item.recipe?.nutrition?.fiber || 0
+            }
+          })),
+          totalNutrition: {
+            calories: Math.round(meal.items.reduce((sum, item) => 
+              sum + ((item.foodItem?.calories || item.recipe?.nutrition?.calories || 0) * (item.quantity || 1)), 0)),
+            protein: Math.round(meal.items.reduce((sum, item) => 
+              sum + ((item.foodItem?.protein || item.recipe?.nutrition?.protein || 0) * (item.quantity || 1)), 0) * 100) / 100,
+            carbs: Math.round(meal.items.reduce((sum, item) => 
+              sum + ((item.foodItem?.carbs || item.recipe?.nutrition?.carbs || 0) * (item.quantity || 1)), 0) * 100) / 100,
+            fat: Math.round(meal.items.reduce((sum, item) => 
+              sum + ((item.foodItem?.fat || item.recipe?.nutrition?.fat || 0) * (item.quantity || 1)), 0) * 100) / 100,
+            fiber: Math.round(meal.items.reduce((sum, item) => 
+              sum + ((item.foodItem?.fiber || item.recipe?.nutrition?.fiber || 0) * (item.quantity || 1)), 0) * 100) / 100
+          }
+        }));
+      
+      days.push({
+        day: dayNames[i],
+        date: currentDate,
+        meals: dayMeals
+      });
+    }
+    
+    const mealPlan = new MealPlan({
+      userId: req.user._id,
+      name: name || `${template.name} - ${startDate}`,
+      description: `Generated from template: ${template.name}`,
+      startDate: start,
+      endDate: end,
+      days: days
+    });
+    
+    await mealPlan.save();
+    await mealPlan.populate('days.meals.items.foodItem');
+    await mealPlan.populate('days.meals.items.recipe');
+    
+    res.status(201).json({
+      success: true,
+      message: 'Meal plan generated successfully',
+      data: mealPlan
+    });
+  } catch (error) {
+    console.error('Generate meal plan error:', error);
+    standardErrorResponse(res, 500, 'Failed to generate meal plan', error.message);
+  }
+});
+
+// Shopping List Routes
+app.get('/api/shopping-lists', authenticate, async (req, res) => {
+  try {
+    const shoppingLists = await ShoppingList.find({
+      userId: req.user._id,
+      isActive: true
+    }).populate('mealPlanId');
+    
+    res.json({
+      success: true,
+      data: shoppingLists
+    });
+  } catch (error) {
+    console.error('Get shopping lists error:', error);
+    standardErrorResponse(res, 500, 'Failed to retrieve shopping lists', error.message);
+  }
+});
+
+app.post('/api/shopping-lists/generate-from-meal-plan', authenticate, async (req, res) => {
+  try {
+    const { mealPlanId, name } = req.body;
+    
+    const mealPlan = await MealPlan.findOne({
+      _id: mealPlanId,
+      userId: req.user._id,
+      isActive: true
+    })
+    .populate('days.meals.items.foodItem')
+    .populate('days.meals.items.recipe');
+    
+    if (!mealPlan) {
+      return standardErrorResponse(res, 404, 'Meal plan not found');
+    }
+    
+    // Aggregate ingredients from meal plan
+    const ingredientMap = new Map();
+    
+    mealPlan.days.forEach(day => {
+      day.meals.forEach(meal => {
+        meal.items.forEach(item => {
+          const itemName = item.foodItem?.name || item.recipe?.name || item.name;
+          const key = itemName.toLowerCase();
+          
+          if (ingredientMap.has(key)) {
+            const existing = ingredientMap.get(key);
+            existing.quantity += item.quantity || 1;
+          } else {
+            ingredientMap.set(key, {
+              name: itemName,
+              category: 'pantry', // You can enhance this with category detection
+              quantity: item.quantity || 1,
+              unit: item.unit || 'serving',
+              estimatedCost: 0, // You can add cost estimation logic
+              purchased: false
+            });
+          }
+        });
+      });
+    });
+    
+    const shoppingList = new ShoppingList({
+      userId: req.user._id,
+      mealPlanId: mealPlanId,
+      name: name || `Shopping for ${mealPlan.name}`,
+      items: Array.from(ingredientMap.values())
+    });
+    
+    await shoppingList.save();
+    
+    res.status(201).json({
+      success: true,
+      message: 'Shopping list generated successfully',
+      data: shoppingList
+    });
+  } catch (error) {
+    console.error('Generate shopping list error:', error);
+    standardErrorResponse(res, 500, 'Failed to generate shopping list', error.message);
+  }
+});
 // GET /api/appointments/upcoming - Get upcoming appointments (next 7 days)
 app.get('/api/appointments/upcoming', authenticate, async (req, res) => {
   try {
