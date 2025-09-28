@@ -1273,7 +1273,85 @@ app.post('/api/meals', authenticate, async (req, res) => {
             standardErrorResponse(res, 500, 'Failed to retrieve water intake data', error.message);
         }
     });
-
+// Add this route to calculate daily totals
+app.get('/api/daily-totals', authenticate, async (req, res) => {
+  try {
+    const { date } = req.query;
+    const targetDate = date ? new Date(date) : new Date();
+    
+    const startOfDay = new Date(targetDate);
+    startOfDay.setHours(0, 0, 0, 0);
+    
+    const endOfDay = new Date(targetDate);
+    endOfDay.setHours(23, 59, 59, 999);
+    
+    // Get meals for the day
+    const meals = await Meal.find({
+      userId: req.user._id,
+      date: { $gte: startOfDay, $lte: endOfDay }
+    }).populate('items.foodItem').populate('items.recipe');
+    
+    // Get water intake for the day
+    const waterIntakes = await WaterIntake.find({
+      userId: req.user._id,
+      date: { $gte: startOfDay, $lte: endOfDay }
+    });
+    
+    // Calculate totals from meals
+    const totals = {
+      calories: 0,
+      protein: 0,
+      carbs: 0,
+      fat: 0,
+      fiber: 0
+    };
+    
+    meals.forEach(meal => {
+      if (meal.totalNutrition) {
+        totals.calories += Number(meal.totalNutrition.calories) || 0;
+        totals.protein += Number(meal.totalNutrition.protein) || 0;
+        totals.carbs += Number(meal.totalNutrition.carbs) || 0;
+        totals.fat += Number(meal.totalNutrition.fat) || 0;
+        totals.fiber += Number(meal.totalNutrition.fiber) || 0;
+      }
+    });
+    
+    // Calculate water total
+    const waterTotal = waterIntakes.reduce((sum, intake) => sum + intake.amount, 0);
+    
+    // Get goals
+    const goals = await NutritionalGoals.findOne({ userId: req.user._id }) || {
+      dailyCalories: 2000,
+      protein: 150,
+      carbs: 250,
+      fat: 67,
+      fiber: 25,
+      water: 2000
+    };
+    
+    res.json({
+      success: true,
+      data: {
+        date: targetDate.toISOString().split('T')[0],
+        totals: {
+          calories: Math.round(totals.calories),
+          protein: Math.round(totals.protein),
+          carbs: Math.round(totals.carbs),
+          fat: Math.round(totals.fat),
+          fiber: Math.round(totals.fiber),
+          water: waterTotal
+        },
+        goals: goals,
+        mealsCount: meals.length,
+        waterEntriesCount: waterIntakes.length
+      }
+    });
+    
+  } catch (error) {
+    console.error('Daily totals error:', error);
+    standardErrorResponse(res, 500, 'Failed to calculate daily totals', error.message);
+  }
+});
     app.post('/api/water-intake', authenticate, async (req, res) => {
         try {
             const waterIntake = new WaterIntake({
