@@ -2410,6 +2410,111 @@ app.put('/api/nutritional-goals', authenticate, async (req, res) => {
             standardErrorResponse(res, 500, 'Failed to generate daily report', error.message);
         }
     });
+// Ingredients Search API using USDA FoodData Central
+app.get('/api/ingredients/search', authenticate, async (req, res) => {
+  try {
+    const { query, pageSize = 10, pageNumber = 1 } = req.query;
+
+    if (!query || query.trim().length < 2) {
+      return standardErrorResponse(res, 400, 'Search query must be at least 2 characters long');
+    }
+
+    // Load API key from environment
+    const USDA_API_KEY = process.env.USDA_API_KEY;
+    if (!USDA_API_KEY) {
+      return standardErrorResponse(res, 500, 'USDA API key is not configured');
+    }
+
+    // Using USDA FoodData Central API
+    const response = await axios.get('https://api.nal.usda.gov/fdc/v1/foods/search', {
+      params: {
+        api_key: USDA_API_KEY,
+        query: query.trim(),
+        dataType: ['Foundation', 'SR Legacy'],
+        pageSize: Math.min(pageSize, 25),
+        pageNumber: pageNumber,
+        sortBy: 'dataType.keyword',
+        sortOrder: 'asc'
+      },
+      timeout: 10000
+    });
+
+    const ingredients = response.data.foods.map(food => {
+      const nutrients = food.foodNutrients || [];
+      const calories = nutrients.find(n => n.nutrientName === 'Energy')?.value || 0;
+      const protein = nutrients.find(n => n.nutrientName === 'Protein')?.value || 0;
+      const carbs = nutrients.find(n => n.nutrientName === 'Carbohydrate, by difference')?.value || 0;
+      const fat = nutrients.find(n => n.nutrientName === 'Total lipid (fat)')?.value || 0;
+      const fiber = nutrients.find(n => n.nutrientName === 'Fiber, total dietary')?.value || 0;
+
+      return {
+        id: food.fdcId,
+        name: food.description,
+        brand: food.brandOwner || 'Generic',
+        category: food.foodCategory || 'Unknown',
+        servingSize: food.servingSize || 100,
+        servingUnit: food.servingSizeUnit || 'g',
+        nutrition: {
+          calories: Math.round(calories),
+          protein: Math.round(protein * 10) / 10,
+          carbs: Math.round(carbs * 10) / 10,
+          fat: Math.round(fat * 10) / 10,
+          fiber: Math.round(fiber * 10) / 10
+        }
+      };
+    });
+
+    res.json({
+      success: true,
+      data: {
+        ingredients,
+        totalHits: response.data.totalHits,
+        currentPage: pageNumber,
+        totalPages: response.data.totalPages
+      }
+    });
+
+  } catch (error) {
+    console.error('Ingredients search error:', error);
+
+    try {
+      // Fallback to local food items if USDA API fails
+      const localFoods = await FoodItem.find({
+        name: { $regex: req.query.query, $options: 'i' },
+        $or: [{ isCustom: false }, { createdBy: req.user._id }]
+      }).limit(10);
+
+      const ingredients = localFoods.map(food => ({
+        id: food._id,
+        name: food.name,
+        brand: food.brand || 'Generic',
+        category: 'Local Database',
+        servingSize: 100,
+        servingUnit: 'g',
+        nutrition: {
+          calories: food.calories,
+          protein: food.protein,
+          carbs: food.carbs,
+          fat: food.fat,
+          fiber: food.fiber
+        }
+      }));
+
+      res.json({
+        success: true,
+        data: {
+          ingredients,
+          totalHits: ingredients.length,
+          currentPage: 1,
+          totalPages: 1,
+          fromLocal: true
+        }
+      });
+    } catch (fallbackError) {
+      standardErrorResponse(res, 500, 'Failed to search ingredients', error.message);
+    }
+  }
+});
 
     app.get('/api/reports/weekly', authenticate, async (req, res) => {
         try {
