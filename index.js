@@ -201,83 +201,103 @@ ShoppingListSchema.pre('save', function(next) {
 
 const ShoppingList = mongoose.model('ShoppingList', ShoppingListSchema);
 // Custom Recipe Schema
-// Recipe Schema
-    const RecipeSchema = new mongoose.Schema({
-        name: { type: String, required: true },
-        description: { type: String },
-        ingredients: [{
-            foodItem: { type: mongoose.Schema.Types.ObjectId, ref: 'FoodItem' },
-            quantity: { type: Number, required: true },
-            unit: { type: String, required: true }
-        }],
-        servings: { type: Number, required: true },
-        instructions: [{ type: String }],
-        nutrition: {
-            calories: { type: Number },
-            protein: { type: Number },
-            carbs: { type: Number },
-            fat: { type: Number },
-            fiber: { type: Number }
-        },
-        createdBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
-        isPublic: { type: Boolean, default: false },
-        tags: [{ type: String }],
-        createdAt: { type: Date, default: Date.now },
-        updatedAt: { type: Date, default: Date.now }
-    });
+// Enhanced Recipe Schema
+const RecipeSchema = new mongoose.Schema({
+  name: { 
+    type: String, 
+    required: true,
+    trim: true,
+    maxlength: 100
+  },
+  description: { 
+    type: String, 
+    trim: true,
+    maxlength: 500 
+  },
+  ingredients: [{
+    name: { type: String, required: true },
+    quantity: { type: Number, required: true },
+    unit: { 
+      type: String, 
+      required: true,
+      enum: ['g', 'kg', 'ml', 'l', 'tsp', 'tbsp', 'cup', 'piece', 'slice', 'pinch', 'clove', 'bunch', 'can'],
+      default: 'g'
+    },
+    foodItem: { 
+      type: mongoose.Schema.Types.ObjectId, 
+      ref: 'FoodItem' 
+    },
+    notes: { type: String, maxlength: 100 }
+  }],
+  servings: { 
+    type: Number, 
+    required: true,
+    min: 1,
+    max: 100
+  },
+  prepTime: { 
+    type: Number, 
+    min: 0,
+    default: 0 
+  }, // in minutes
+  cookTime: { 
+    type: Number, 
+    min: 0,
+    default: 0 
+  }, // in minutes
+  instructions: [{ 
+    type: String, 
+    required: true,
+    trim: true,
+    maxlength: 500 
+  }],
+  tags: [{ 
+    type: String,
+    trim: true,
+    maxlength: 50 
+  }],
+  category: {
+    type: String,
+    enum: ['breakfast', 'lunch', 'dinner', 'snack', 'dessert', 'beverage', 'other'],
+    default: 'other'
+  },
+  difficulty: {
+    type: String,
+    enum: ['easy', 'medium', 'hard'],
+    default: 'easy'
+  },
+  nutrition: {
+    calories: { type: Number, default: 0 },
+    protein: { type: Number, default: 0 },
+    carbs: { type: Number, default: 0 },
+    fat: { type: Number, default: 0 },
+    fiber: { type: Number, default: 0 },
+    sugar: { type: Number, default: 0 },
+    sodium: { type: Number, default: 0 }
+  },
+  imageUrl: { type: String },
+  createdBy: { 
+    type: mongoose.Schema.Types.ObjectId, 
+    ref: 'User', 
+    required: true 
+  },
+  isPublic: { 
+    type: Boolean, 
+    default: false 
+  },
+  rating: {
+    average: { type: Number, default: 0, min: 0, max: 5 },
+    count: { type: Number, default: 0 }
+  },
+  createdAt: { type: Date, default: Date.now },
+  updatedAt: { type: Date, default: Date.now }
+});
 
-    RecipeSchema.pre('save', async function(next) {
-        this.updatedAt = Date.now();
-        
-        // Calculate nutrition from ingredients
-        if (this.ingredients.length > 0 && this.isModified('ingredients')) {
-            try {
-                let totalCalories = 0;
-                let totalProtein = 0;
-                let totalCarbs = 0;
-                let totalFat = 0;
-                let totalFiber = 0;
-                
-                // Populate ingredients if needed
-                if (this.ingredients[0].foodItem && typeof this.ingredients[0].foodItem === 'object') {
-                    // Already populated
-                    this.ingredients.forEach(ingredient => {
-                        if (ingredient.foodItem) {
-                            totalCalories += (ingredient.foodItem.calories * ingredient.quantity);
-                            totalProtein += (ingredient.foodItem.protein * ingredient.quantity);
-                            totalCarbs += (ingredient.foodItem.carbs * ingredient.quantity);
-                            totalFat += (ingredient.foodItem.fat * ingredient.quantity);
-                            totalFiber += (ingredient.foodItem.fiber * ingredient.quantity);
-                        }
-                    });
-                } else {
-                    // Need to populate
-                    await this.populate('ingredients.foodItem');
-                    this.ingredients.forEach(ingredient => {
-                        if (ingredient.foodItem) {
-                            totalCalories += (ingredient.foodItem.calories * ingredient.quantity);
-                            totalProtein += (ingredient.foodItem.protein * ingredient.quantity);
-                            totalCarbs += (ingredient.foodItem.carbs * ingredient.quantity);
-                            totalFat += (ingredient.foodItem.fat * ingredient.quantity);
-                            totalFiber += (ingredient.foodItem.fiber * ingredient.quantity);
-                        }
-                    });
-                }
-                
-                this.nutrition = {
-                    calories: Math.round(totalCalories / this.servings),
-                    protein: Math.round(totalProtein / this.servings),
-                    carbs: Math.round(totalCarbs / this.servings),
-                    fat: Math.round(totalFat / this.servings),
-                    fiber: Math.round(totalFiber / this.servings)
-                };
-            } catch (error) {
-                console.error('Error calculating recipe nutrition:', error);
-            }
-        }
-        
-        next();
-    });
+// Update timestamp on save
+RecipeSchema.pre('save', function(next) {
+  this.updatedAt = Date.now();
+  next();
+});
 const Recipe = mongoose.model('Recipe', RecipeSchema);
 // Meal Schema
     const MealSchema = new mongoose.Schema({
@@ -2877,7 +2897,75 @@ app.post('/api/meal-plan-templates', authenticate, async (req, res) => {
     res.status(500).json({ message: 'Server error' });
   }
 });
+// Enhanced Recipe Routes with proper error handling
+app.get('/api/recipes/:id', authenticate, async (req, res) => {
+  try {
+    const recipe = await Recipe.findOne({
+      _id: req.params.id,
+      $or: [{ createdBy: req.user._id }, { isPublic: true }]
+    }).populate('ingredients.foodItem');
+    
+    if (!recipe) {
+      return standardErrorResponse(res, 404, 'Recipe not found');
+    }
+    
+    res.json({
+      success: true,
+      data: recipe
+    });
+  } catch (error) {
+    console.error('Get recipe error:', error);
+    standardErrorResponse(res, 500, 'Failed to retrieve recipe', error.message);
+  }
+});
 
+
+app.put('/api/recipes/:id', authenticate, async (req, res) => {
+  try {
+    const recipe = await Recipe.findOneAndUpdate(
+      {
+        _id: req.params.id,
+        createdBy: req.user._id
+      },
+      req.body,
+      { new: true, runValidators: true }
+    ).populate('ingredients.foodItem');
+    
+    if (!recipe) {
+      return standardErrorResponse(res, 404, 'Recipe not found');
+    }
+    
+    res.json({
+      success: true,
+      message: 'Recipe updated successfully',
+      data: recipe
+    });
+  } catch (error) {
+    console.error('Update recipe error:', error);
+    standardErrorResponse(res, 500, 'Failed to update recipe', error.message);
+  }
+});
+
+app.delete('/api/recipes/:id', authenticate, async (req, res) => {
+  try {
+    const recipe = await Recipe.findOneAndDelete({
+      _id: req.params.id,
+      createdBy: req.user._id
+    });
+    
+    if (!recipe) {
+      return standardErrorResponse(res, 404, 'Recipe not found');
+    }
+    
+    res.json({
+      success: true,
+      message: 'Recipe deleted successfully'
+    });
+  } catch (error) {
+    console.error('Delete recipe error:', error);
+    standardErrorResponse(res, 500, 'Failed to delete recipe', error.message);
+  }
+});
 // Generate Meal Plan from Template
 app.post('/api/generate-meal-plan', authenticate, async (req, res) => {
   try {
